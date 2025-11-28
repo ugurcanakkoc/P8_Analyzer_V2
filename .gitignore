@@ -1,0 +1,62 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual Environment
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Project Specific - Data & Models
+data/
+YOLO/runs/
+YOLO/models/
+YOLO/yolo_data/
+*.pt
+*.pth
+*.onnx
+
+# External Repos (if managed manually or via submodules)
+external/
+
+# Logs & Temporary Files
+*.log
+tmp/
+temp/
+test_results/
+archive/
+eski dosyalar/
+
+# OS Specific
+.DS_Store
+Thumbs.db

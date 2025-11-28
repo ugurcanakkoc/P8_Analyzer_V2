@@ -1,0 +1,12 @@
+# Multi-Class Dataset (PLC + Terminal + Contactor)
+# Yeni etiketlediğiniz veriler + Sentetik augmentasyon
+
+path: C:/Users/Ugur Can/Desktop/P8_YOLO_Egitim/data/augmented  # Dataset root (mutlak yol)
+train: images/train           # Train images (relative to 'path')
+val: images/val               # Validation images
+
+# Classes
+names:
+  0: PLC_Module
+  1: Terminal
+  2: Contactor
