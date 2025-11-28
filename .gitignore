@@ -38,13 +38,13 @@ venv.bak/
 *.swo
 
 # Project Specific - Data & Models
-data/
-YOLO/runs/
-YOLO/models/
-YOLO/yolo_data/
-*.pt
-*.pth
-*.onnx
+# data/
+# YOLO/runs/
+# YOLO/models/
+# YOLO/yolo_data/
+# *.pt
+# *.pth
+# *.onnx
 
 # External Repos (if managed manually or via submodules)
 external/
