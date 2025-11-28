@@ -1,0 +1,1449 @@
+"""
+PDF PLC Connection Analyzer - GUI Version
+PLC tespit + Çizgi analizi + Bağlantı tespiti + Pin Metin Okuma (OCR/Text Extraction) + Debug Modu
+(Original Code + Busbar Scanning Patch)
+"""
+
+import tkinter as tk
+from tkinter import ttk, filedialog, messagebox
+from PIL import Image, ImageTk, ImageDraw, ImageFont
+import pymupdf
+from pathlib import Path
+from ultralytics import YOLO
+import numpy as np
+import yaml
+import traceback
+import re
+import sys
+import os
+
+# Proje kök dizinini ekle
+parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, parent_dir)
+
+# Utils paketinden import et
+from utils.uvp_module import analyze_page_vectors, AnalysisConfig
+from utils.terminal_detector import TerminalDetector
+from utils.terminal_reader import TerminalReader
+from utils.connection_tracer import ConnectionTracer
+from utils.terminal_grouper import TerminalGrouper
+from utils.wire_label_reader import WireLabelReader
+
+
+class PDFPLCConnectionAnalyzer:
+    def __init__(self, root, customer_id='troester'):
+        self.root = root
+        self.root.title("🔌 PDF PLC Connection Analyzer - Enterprise Edition")
+        self.root.geometry("1600x900")
+        
+        # Stil Ayarları
+        self.setup_style()
+        
+        # Müşteri Ayarları
+        self.customer_id = customer_id
+        self.config = self.load_customer_config()
+        
+        # PLC Model
+        self.model = None
+        self.load_model()
+        
+        # Röle Model
+        self.relay_model = None
+        self.load_relay_model()
+        
+        # Render zoom sabiti (PDF okuma kalitesi için)
+        self.render_zoom = 2.0
+        
+        # UVP config
+        self.uvp_config = AnalysisConfig()
+        
+        # UI Değişkenleri (Config için)
+        self.init_config_vars()
+        
+        # Modülleri Başlat
+        self.init_modules()
+        
+        # PDF ve Görüntü Değişkenleri
+        self.pdf_doc = None
+        self.current_page_index = 0
+        self.num_pages = 0
+        
+        self.original_image = None
+        self.display_image = None
+        self.tk_image = None
+        self.base_scale = 1.0
+        self.zoom_factor = 1.0
+        
+        # Panning Değişkenleri
+        self.pan_start_x = 0
+        self.pan_start_y = 0
+        
+        # Analiz Sonuçları
+        self.plcs = []
+        self.relays = []  # Röle listesi
+        self.vector_analysis = None
+        self.connections = {}
+        self.terminals = []
+        
+        self.display_max_size = (1200, 800)
+        
+        # Arayüzü Oluştur
+        self.build_ui()
+        
+        # Event Bağlamaları
+        self.bind_events()
+
+    def setup_style(self):
+        """Modern bir görünüm için stil ayarları"""
+        style = ttk.Style()
+        try:
+            style.theme_use('clam')
+        except:
+            pass
+            
+        # Renk Paleti
+        bg_dark = "#2b2b2b"
+        fg_light = "#ffffff"
+        accent = "#007acc"
+        
+        # Genel Ayarlar
+        style.configure(".", font=("Segoe UI", 9))
+        style.configure("TFrame", background="#f0f0f0")
+        style.configure("TLabel", background="#f0f0f0", font=("Segoe UI", 9))
+        style.configure("TButton", padding=5, font=("Segoe UI", 9))
+        style.configure("TCheckbutton", background="#f0f0f0", font=("Segoe UI", 9))
+        style.configure("TLabelframe", background="#f0f0f0", padding=10)
+        style.configure("TLabelframe.Label", background="#f0f0f0", font=("Segoe UI", 9, "bold"), foreground="#333")
+        
+        # Özel Stiller
+        style.configure("Big.TButton", font=("Segoe UI", 11, "bold"), padding=10)
+        style.configure("Header.TLabel", font=("Segoe UI", 14, "bold"), foreground="#333")
+        style.configure("Status.TLabel", font=("Segoe UI", 8), foreground="#666")
+
+    def init_config_vars(self):
+        """UI üzerinden ayarlanabilir konfigürasyon değişkenleri"""
+        self.vars = {
+            # Terminal Reader
+            'reader_dir': tk.StringVar(value='top_right'),
+            'reader_radius': tk.DoubleVar(value=20.0),
+            'reader_y_tol': tk.DoubleVar(value=15.0),
+            
+            # Terminal Grouper
+            'grouper_dir': tk.StringVar(value='left'),
+            'grouper_radius': tk.DoubleVar(value=50.0),
+            'grouper_pattern': tk.StringVar(value=r'^-X.*'),
+            
+            # Analysis
+            'conn_tol': tk.DoubleVar(value=15.0),
+            'cluster_dist': tk.DoubleVar(value=10.0),
+            
+            # UVP Settings (New)
+            'uvp_conn_tol': tk.DoubleVar(value=1.0),
+            'uvp_line_tol': tk.DoubleVar(value=0.2),
+            'uvp_ext_len': tk.DoubleVar(value=5.0),
+            
+            # Model
+            'model_conf': tk.DoubleVar(value=0.25),
+            
+            # UI State
+            'debug': tk.BooleanVar(value=False),
+            'pdf_name': tk.StringVar(value="PDF Yüklenmedi"),
+            'page_label': tk.StringVar(value="-/-"),
+            'zoom_label': tk.StringVar(value="100%")
+        }
+
+    def init_modules(self):
+        """Modülleri mevcut ayarlarla başlat"""
+        # Terminal Detector
+        terminal_config = {
+            'min_radius': 2.5,
+            'max_radius': 3.5,
+            'max_cv': 0.01,
+            'only_unfilled': True
+        }
+        self.terminal_detector = TerminalDetector(config=terminal_config)
+        
+        # Terminal Reader
+        reader_config = {
+            'direction': self.vars['reader_dir'].get(),
+            'search_radius': self.vars['reader_radius'].get(),
+            'y_tolerance': self.vars['reader_y_tol'].get()
+        }
+        self.terminal_reader = TerminalReader(config=reader_config)
+        
+        # Connection Tracer
+        tracer_config = {
+            'connection_tolerance': 5.0,
+            'terminal_tolerance': 5.0
+        }
+        self.connection_tracer = ConnectionTracer(config=tracer_config)
+        
+        # Terminal Grouper
+        grouper_config = {
+            'search_direction': self.vars['grouper_dir'].get(),
+            'search_radius': self.vars['grouper_radius'].get(),
+            'y_tolerance': 10,
+            'label_pattern': self.vars['grouper_pattern'].get()
+        }
+        self.terminal_grouper = TerminalGrouper(config=grouper_config)
+        
+        # Wire Label Reader
+        wire_label_config = {
+            'search_radius': 30.0,
+            'label_pattern': r'^[A-Z0-9/\.\-\_\+]+$',
+            'min_label_length': 2
+        }
+        self.wire_label_reader = WireLabelReader(config=wire_label_config)
+        
+        # UVP Config
+        self.uvp_config = AnalysisConfig()
+
+    def sync_config(self):
+        """UI'daki ayarları modüllere aktar"""
+        print("⚙️ Ayarlar güncelleniyor...")
+        
+        # Reader
+        self.terminal_reader.direction = self.vars['reader_dir'].get()
+        self.terminal_reader.search_radius = self.vars['reader_radius'].get()
+        self.terminal_reader.y_tolerance = self.vars['reader_y_tol'].get()
+        
+        # Grouper
+        self.terminal_grouper.search_direction = self.vars['grouper_dir'].get()
+        self.terminal_grouper.search_radius = self.vars['grouper_radius'].get()
+        self.terminal_grouper.label_pattern = self.vars['grouper_pattern'].get()
+        
+        # UVP Config Update
+        self.uvp_config.connection_tolerance = self.vars['uvp_conn_tol'].get()
+        self.uvp_config.line_tolerance = self.vars['uvp_line_tol'].get()
+        self.uvp_config.extension_length = self.vars['uvp_ext_len'].get()
+        
+        # Config dictionary güncelle
+        if 'analysis' not in self.config: self.config['analysis'] = {}
+        self.config['analysis']['connection_tolerance'] = self.vars['conn_tol'].get()
+        self.config['analysis']['clustering_distance'] = self.vars['cluster_dist'].get()
+        
+        if 'model' not in self.config: self.config['model'] = {}
+        self.config['model']['confidence_threshold'] = self.vars['model_conf'].get()
+
+    def build_ui(self):
+        """Ana Arayüz Yapısı"""
+        # Ana Splitter (PanedWindow)
+        self.paned = ttk.PanedWindow(self.root, orient=tk.HORIZONTAL)
+        self.paned.pack(fill=tk.BOTH, expand=True)
+        
+        # --- SOL PANEL (Canvas) ---
+        left_frame = ttk.Frame(self.paned)
+        self.paned.add(left_frame, weight=3)
+        
+        # Canvas Scrollbars
+        v_scroll = ttk.Scrollbar(left_frame, orient=tk.VERTICAL)
+        h_scroll = ttk.Scrollbar(left_frame, orient=tk.HORIZONTAL)
+        
+        self.canvas = tk.Canvas(
+            left_frame, 
+            bg="#333333", 
+            highlightthickness=0,
+            yscrollcommand=v_scroll.set,
+            xscrollcommand=h_scroll.set
+        )
+        
+        v_scroll.config(command=self.canvas.yview)
+        h_scroll.config(command=self.canvas.xview)
+        
+        v_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+        h_scroll.pack(side=tk.BOTTOM, fill=tk.X)
+        self.canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        
+        # --- SAĞ PANEL (Sidebar) ---
+        right_frame = ttk.Frame(self.paned, width=450)
+        self.paned.add(right_frame, weight=1)
+        
+        # Tab Yapısı
+        self.notebook = ttk.Notebook(right_frame)
+        self.notebook.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        
+        # Tab 1: Dashboard (Kontrol Paneli)
+        self.tab_dashboard = ttk.Frame(self.notebook)
+        self.notebook.add(self.tab_dashboard, text="   Dashboard   ")
+        self.build_dashboard_tab(self.tab_dashboard)
+        
+        # Tab 2: Ayarlar (Config)
+        self.tab_settings = ttk.Frame(self.notebook)
+        self.notebook.add(self.tab_settings, text="   Ayarlar   ")
+        self.build_settings_tab(self.tab_settings)
+        
+        # Tab 3: Loglar
+        self.tab_logs = ttk.Frame(self.notebook)
+        self.notebook.add(self.tab_logs, text="   Loglar   ")
+        self.build_logs_tab(self.tab_logs)
+
+    def build_dashboard_tab(self, parent):
+        """Dashboard Sekmesi İçeriği"""
+        # Başlık
+        header_frame = ttk.Frame(parent)
+        header_frame.pack(fill=tk.X, pady=15, padx=10)
+        ttk.Label(header_frame, text="PLC Analyzer", style="Header.TLabel").pack(side=tk.LEFT)
+        ttk.Label(header_frame, text="v2.5 (Original+Fix)", style="Status.TLabel").pack(side=tk.LEFT, padx=5, pady=(5,0))
+        
+        # Dosya Bilgisi
+        file_frame = ttk.LabelFrame(parent, text="Dosya İşlemleri")
+        file_frame.pack(fill=tk.X, padx=10, pady=5)
+        
+        ttk.Button(file_frame, text="📂 PDF Dosyası Aç", command=self.load_pdf).pack(fill=tk.X, padx=5, pady=5)
+        ttk.Label(file_frame, textvariable=self.vars['pdf_name'], font=("Segoe UI", 9, "italic")).pack(padx=5, pady=(0,5))
+        
+        # Navigasyon
+        nav_frame = ttk.LabelFrame(parent, text="Navigasyon")
+        nav_frame.pack(fill=tk.X, padx=10, pady=5)
+        
+        btn_box = ttk.Frame(nav_frame)
+        btn_box.pack(fill=tk.X, padx=5, pady=5)
+        
+        ttk.Button(btn_box, text="◀ Önceki", command=self.prev_page, width=10).pack(side=tk.LEFT)
+        ttk.Label(btn_box, textvariable=self.vars['page_label'], font=("Segoe UI", 10, "bold"), width=10, anchor="center").pack(side=tk.LEFT, expand=True)
+        ttk.Button(btn_box, text="Sonraki ▶", command=self.next_page, width=10).pack(side=tk.LEFT)
+        
+        # Zoom
+        zoom_box = ttk.Frame(nav_frame)
+        zoom_box.pack(fill=tk.X, padx=5, pady=5)
+        ttk.Button(zoom_box, text="🔍 -", command=self.zoom_out, width=5).pack(side=tk.LEFT)
+        ttk.Label(zoom_box, textvariable=self.vars['zoom_label'], width=8, anchor="center").pack(side=tk.LEFT, expand=True)
+        ttk.Button(zoom_box, text="🔍 +", command=self.zoom_in, width=5).pack(side=tk.LEFT)
+        
+        # İşlemler
+        action_frame = ttk.LabelFrame(parent, text="Analiz")
+        action_frame.pack(fill=tk.X, padx=10, pady=10)
+        
+        ttk.Button(
+            action_frame, 
+            text="🚀 ANALİZİ BAŞLAT", 
+            command=self.analyze_page, 
+            style="Big.TButton",
+            cursor="hand2"
+        ).pack(fill=tk.X, padx=5, pady=10)
+        
+        ttk.Checkbutton(
+            action_frame, 
+            text="Debug Modu (Çizgileri Göster)", 
+            variable=self.vars['debug'],
+            command=self.draw_results
+        ).pack(anchor="w", padx=5)
+        
+        # Kısayol Bilgisi
+        info_lbl = ttk.Label(parent, text="💡 İpucu: PDF üzerinde gezinmek için Sol Tık ile sürükleyin.\nZoom için fare tekerleğini kullanın.", foreground="#666", justify="center")
+        info_lbl.pack(side=tk.BOTTOM, pady=20)
+
+    def build_settings_tab(self, parent):
+        """Ayarlar Sekmesi İçeriği"""
+        scroll = ttk.Scrollbar(parent)
+        scroll.pack(side=tk.RIGHT, fill=tk.Y)
+        
+        canvas = tk.Canvas(parent, yscrollcommand=scroll.set, bg="#f0f0f0", highlightthickness=0)
+        canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        scroll.config(command=canvas.yview)
+        
+        inner_frame = ttk.Frame(canvas)
+        canvas.create_window((0,0), window=inner_frame, anchor="nw", width=400) # Width sabit
+        
+        # --- OCR Ayarları ---
+        ocr_frame = ttk.LabelFrame(inner_frame, text="OCR / Pin Okuma")
+        ocr_frame.pack(fill=tk.X, padx=10, pady=5)
+        
+        self.create_setting_row(ocr_frame, "Yön:", self.vars['reader_dir'], 
+                              widget_type="combo", values=['right', 'top_right', 'top', 'left', 'bottom'])
+        self.create_setting_row(ocr_frame, "Arama Yarıçapı:", self.vars['reader_radius'], 
+                              widget_type="scale", from_=5, to=100)
+        self.create_setting_row(ocr_frame, "Y-Toleransı:", self.vars['reader_y_tol'], 
+                              widget_type="scale", from_=0, to=50)
+
+        # --- Gruplama Ayarları ---
+        grp_frame = ttk.LabelFrame(inner_frame, text="Klemens Gruplama (-X1)")
+        grp_frame.pack(fill=tk.X, padx=10, pady=5)
+        
+        self.create_setting_row(grp_frame, "Yön:", self.vars['grouper_dir'], 
+                              widget_type="combo", values=['left', 'right', 'top', 'bottom'])
+        self.create_setting_row(grp_frame, "Arama Yarıçapı:", self.vars['grouper_radius'], 
+                              widget_type="scale", from_=10, to=200)
+        self.create_setting_row(grp_frame, "Etiket Deseni (Regex):", self.vars['grouper_pattern'], 
+                              widget_type="entry")
+
+        # --- Analiz Ayarları ---
+        ana_frame = ttk.LabelFrame(inner_frame, text="Bağlantı Analizi (Genel)")
+        ana_frame.pack(fill=tk.X, padx=10, pady=5)
+        
+        self.create_setting_row(ana_frame, "Bağlantı Toleransı:", self.vars['conn_tol'], 
+                              widget_type="scale", from_=1, to=50)
+        self.create_setting_row(ana_frame, "Kümeleme Mesafesi:", self.vars['cluster_dist'], 
+                              widget_type="scale", from_=1, to=50)
+        
+        # --- UVP Ayarları (YENİ) ---
+        uvp_frame = ttk.LabelFrame(inner_frame, text="UVP Ayarları (Çizgi Birleştirme)")
+        uvp_frame.pack(fill=tk.X, padx=10, pady=5)
+        
+        self.create_setting_row(uvp_frame, "Nokta Birleştirme (Tol):", self.vars['uvp_conn_tol'], 
+                              widget_type="scale", from_=0.1, to=10.0)
+        self.create_setting_row(uvp_frame, "Çizgi Hizalama (Tol):", self.vars['uvp_line_tol'], 
+                              widget_type="scale", from_=0.1, to=5.0)
+        self.create_setting_row(uvp_frame, "Boşluk Doldurma (Max):", self.vars['uvp_ext_len'], 
+                              widget_type="scale", from_=1.0, to=50.0)
+        
+        # --- Model Ayarları ---
+        mdl_frame = ttk.LabelFrame(inner_frame, text="Yapay Zeka Modeli")
+        mdl_frame.pack(fill=tk.X, padx=10, pady=5)
+        
+        self.create_setting_row(mdl_frame, "Güven Eşiği (Conf):", self.vars['model_conf'], 
+                              widget_type="scale", from_=0.1, to=1.0)
+        
+        inner_frame.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+
+    def create_setting_row(self, parent, label_text, variable, widget_type="entry", **kwargs):
+        """Ayar satırı oluşturucu"""
+        frame = ttk.Frame(parent)
+        frame.pack(fill=tk.X, padx=5, pady=2)
+        
+        ttk.Label(frame, text=label_text, width=20).pack(side=tk.LEFT)
+        
+        if widget_type == "combo":
+            ttk.Combobox(frame, textvariable=variable, values=kwargs.get('values', []), state="readonly").pack(side=tk.RIGHT, fill=tk.X, expand=True)
+        elif widget_type == "scale":
+            val_label = ttk.Label(frame, text=f"{variable.get():.1f}", width=5)
+            val_label.pack(side=tk.RIGHT)
+            
+            def update_label(val):
+                val_label.config(text=f"{float(val):.1f}")
+                
+            scale = ttk.Scale(frame, variable=variable, from_=kwargs.get('from_', 0), to=kwargs.get('to_', 100), command=update_label)
+            scale.pack(side=tk.RIGHT, fill=tk.X, expand=True, padx=5)
+        elif widget_type == "entry":
+            ttk.Entry(frame, textvariable=variable).pack(side=tk.RIGHT, fill=tk.X, expand=True)
+
+    def build_logs_tab(self, parent):
+        """Log Sekmesi"""
+        self.results_text = tk.Text(parent, font=("Consolas", 9), bg="#f8f8f8", relief="flat")
+        scroll = ttk.Scrollbar(parent, command=self.results_text.yview)
+        self.results_text.configure(yscrollcommand=scroll.set)
+        
+        self.results_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        scroll.pack(side=tk.RIGHT, fill=tk.Y)
+        
+        # Tag Configs
+        self.results_text.tag_config("header", font=("Consolas", 10, "bold"), foreground="#007acc")
+        self.results_text.tag_config("bold", font=("Consolas", 9, "bold"))
+        self.results_text.tag_config("error", foreground="red")
+        self.results_text.tag_config("success", foreground="green")
+
+    def bind_events(self):
+        """Event Bağlamaları"""
+        # Zoom
+        self.canvas.bind("<MouseWheel>", self.on_mouse_wheel)
+        self.canvas.bind("<Button-4>", self.on_mouse_wheel)
+        self.canvas.bind("<Button-5>", self.on_mouse_wheel)
+        
+        # Pan (Sürükleme)
+        self.canvas.bind("<ButtonPress-1>", self.on_pan_start)
+        self.canvas.bind("<B1-Motion>", self.on_pan_move)
+        
+        # Resize
+        self.root.bind("<Configure>", self.on_resize)
+
+    def on_pan_start(self, event):
+        self.canvas.scan_mark(event.x, event.y)
+
+    def on_pan_move(self, event):
+        self.canvas.scan_dragto(event.x, event.y, gain=1)
+
+    def on_resize(self, event):
+        # Pencere boyutu değiştiğinde gerekirse işlem yap
+        pass
+
+    # --- ESKİ LOGIC METODLARI (Aynen Korundu) ---
+
+    def load_customer_config(self):
+        config_path = Path(parent_dir) / "customers" / self.customer_id / "config.yaml"
+        if not config_path.exists():
+            return {}
+        try:
+            with open(config_path, 'r', encoding='utf-8') as f:
+                config = yaml.safe_load(f)
+            return config
+        except Exception as e:
+            print(f"Config Error: {e}")
+            return {}
+
+    def load_model(self):
+        if not self.config: return False
+        rel_path = self.config['model']['path']
+        model_path = Path(parent_dir) / "customers" / self.customer_id / rel_path
+        if not model_path.exists():
+            messagebox.showerror("Hata", f"Model bulunamadı: {model_path}")
+            return False
+        self.model = YOLO(model_path)
+        return True
+    
+    def load_relay_model(self):
+        """Röle tespit modeli yükle"""
+        model_path = Path(parent_dir) / "runs" / "role_detection" / "weights" / "best.pt"
+        
+        if model_path.exists():
+            self.relay_model = YOLO(model_path)
+            print(f"✅ Röle modeli yüklendi: {model_path}")
+            return True
+        else:
+            print(f"⚠️ Röle modeli bulunamadı: {model_path}")
+            self.relay_model = None
+            return False
+
+    def load_pdf(self):
+        file_path = filedialog.askopenfilename(title="PDF Dosyası Seç", filetypes=[("PDF files", "*.pdf")])
+        if not file_path: return
+        
+        try:
+            self.pdf_doc = pymupdf.open(file_path)
+            self.num_pages = len(self.pdf_doc)
+            self.current_page_index = 0
+            self.vars['pdf_name'].set(f"📄 {Path(file_path).name}")
+            self.load_page(0)
+        except Exception as e:
+            messagebox.showerror("Hata", f"PDF yüklenemedi:\n{str(e)}")
+
+    def load_page(self, page_index):
+        if self.pdf_doc is None or page_index < 0 or page_index >= self.num_pages: return
+        
+        page = self.pdf_doc[page_index]
+        mat = pymupdf.Matrix(self.render_zoom, self.render_zoom)
+        pix = page.get_pixmap(matrix=mat, alpha=False)
+        self.original_image = Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
+        
+        # Fit to canvas
+        canvas_width = self.canvas.winfo_width() or 800
+        canvas_height = self.canvas.winfo_height() or 600
+        
+        self.base_scale = min(canvas_width / self.original_image.width, canvas_height / self.original_image.height, 1.0)
+        
+        self.update_display()
+        self.current_page_index = page_index
+        self.vars['page_label'].set(f"{page_index + 1}/{self.num_pages}")
+        
+        # Reset results
+        self.plcs = []
+        self.vector_analysis = None
+        self.connections = {}
+        self.terminals = []
+        self.wire_labels = []
+        self.results_text.delete(1.0, tk.END)
+        self.results_text.insert(1.0, "Analiz için hazır.\n")
+
+    def update_display(self):
+        if self.original_image is None: return
+        
+        current_scale = self.base_scale * self.zoom_factor
+        new_size = (int(self.original_image.width * current_scale), int(self.original_image.height * current_scale))
+        
+        self.display_image = self.original_image.resize(new_size, Image.LANCZOS)
+        self.tk_image = ImageTk.PhotoImage(self.display_image)
+        
+        self.canvas.delete("all")
+        self.canvas.config(scrollregion=(0, 0, new_size[0], new_size[1]))
+        self.canvas.create_image(0, 0, anchor=tk.NW, image=self.tk_image)
+        self.vars['zoom_label'].set(f"{int(self.zoom_factor * 100)}%")
+        
+        if self.plcs or self.terminals:
+            self.draw_results()
+
+    def zoom_in(self):
+        self.zoom_factor *= 1.2
+        self.update_display()
+    
+    def zoom_out(self):
+        self.zoom_factor /= 1.2
+        self.update_display()
+    
+    def on_mouse_wheel(self, event):
+        if event.num == 5 or event.delta < 0:
+            self.zoom_out()
+        else:
+            self.zoom_in()
+            
+    def prev_page(self):
+        if self.current_page_index > 0: self.load_page(self.current_page_index - 1)
+            
+    def next_page(self):
+        if self.current_page_index < self.num_pages - 1: self.load_page(self.current_page_index + 1)
+
+    def analyze_page(self):
+        """Analizi Başlat"""
+        if self.original_image is None:
+            messagebox.showwarning("Uyarı", "Önce bir PDF yükleyin!")
+            return
+        
+        # Config'i UI'dan güncelle
+        self.sync_config()
+        
+        self.results_text.delete(1.0, tk.END)
+        self.log("🔍 Analiz başlatılıyor...", "header")
+        self.root.update()
+        
+        page = self.pdf_doc[self.current_page_index]
+        
+        # 1. PLC ve Röle Tespiti
+        self.log("📦 Adım 1: PLC ve Röle Tespiti...")
+        try:
+            self.plcs = self._detect_plcs()
+            self.log(f"   ✅ {len(self.plcs)} PLC bulundu", "success")
+            
+            # Röle tespiti
+            if self.relay_model:
+                self.relays = self._detect_relays()
+                self.log(f"   ✅ {len(self.relays)} Röle bulundu", "success")
+            else:
+                self.relays = []
+                self.log("   ⚠️ Röle modeli yüklü değil", "error")
+        except Exception as e:
+            self.log(f"   ❌ HATA: {e}", "error")
+            return
+
+        # 2. Vektör
+        self.log("📐 Adım 2: Vektör Analizi...")
+        self.vector_analysis = self._analyze_vectors(page)
+        if not self.vector_analysis:
+            self.log("   ❌ Kritik Hata: Vektör analizi başarısız.", "error")
+            return
+        
+        # 3. Klemens
+        self.log("🔌 Adım 3: Klemens Tespiti ve Okuma...")
+        try:
+            self.terminals = self.terminal_detector.detect(self.vector_analysis)
+            self.log(f"   ✅ {len(self.terminals)} klemens adayı bulundu")
+            
+            if self.terminals:
+                text_words = page.get_text("words")
+                
+                # Okuma
+                for terminal in self.terminals:
+                    label = self.terminal_reader.find_label(terminal['center'], text_words)
+                    terminal['label'] = label
+                
+                # Gruplama
+                self.terminals = self.terminal_grouper.group_and_label_terminals(self.terminals, text_words)
+                self.log("   ✅ Okuma ve Gruplama tamamlandı", "success")
+                
+        except Exception as e:
+            self.log(f"   ❌ HATA: {e}", "error")
+            self.terminals = []
+
+        # 4. Bağlantı
+        self.log("🔗 Adım 4: Bağlantı Analizi...")
+        try:
+            self.connections = self._analyze_connections(page)
+            self.log("   ✅ Analiz tamamlandı!", "success")
+        except Exception as e:
+            self.log(f"   ❌ HATA: {e}", "error")
+            return
+        
+        # 5. Hat Etiketleri (Wire Labels)
+        self.log("🏷️  Adım 5: Hat Etiketlerini Oku...")
+        try:
+            text_words = self._extract_text_from_page(page)
+            self.wire_labels = self.wire_label_reader.find_wire_labels(
+                vector_analysis=self.vector_analysis,
+                text_words=text_words,
+                plcs=self.plcs,
+                relays=self.relays,
+                terminals=self.terminals
+            )
+            self.log(f"   ✅ {len(self.wire_labels)} hat etiketi bulundu", "success")
+        except Exception as e:
+            self.log(f"   ❌ HATA: {e}", "error")
+            self.wire_labels = []
+
+        self.show_results()
+        self.draw_results()
+        
+        # Log sekmesine geç
+        self.notebook.select(self.tab_logs)
+
+    def log(self, text, tag=None):
+        self.results_text.insert(tk.END, text + "\n", tag)
+        self.results_text.see(tk.END)
+        self.root.update()
+
+    def _detect_plcs(self):
+        if self.model is None:
+            self.log("   ❌ HATA: Model yüklenemedi!", "error")
+            return []
+
+        img = np.array(self.original_image)
+        conf = self.config['model'].get('confidence_threshold', 0.25)
+        
+        try:
+            results = self.model.predict(source=img, conf=conf, verbose=False)
+        except Exception as e:
+            self.log(f"   ❌ HATA (Model Tahmini): {e}", "error")
+            return []
+
+        plcs = []
+        for box in results[0].boxes:
+            xyxy = box.xyxy[0].cpu().numpy()
+            conf = float(box.conf[0])
+            x1, y1, x2, y2 = xyxy / self.render_zoom
+            plc = {'bbox': [float(x1), float(y1), float(x2), float(y2)], 'confidence': conf, 'center': [(x1 + x2) / 2, (y1 + y2) / 2]}
+            plcs.append(plc)
+        plcs.sort(key=lambda p: (p['center'][1], p['center'][0]))
+        for i, plc in enumerate(plcs): plc['id'] = i + 1
+        return plcs
+    
+    def _detect_relays(self):
+        """Röle tespiti yap"""
+        if self.relay_model is None:
+            return []
+        
+        img = np.array(self.original_image)
+        
+        try:
+            # Class ID 4 = Röle
+            results = self.relay_model.predict(source=img, conf=0.3, verbose=False)
+            
+            print("\n🔍 RÖLE TESPİT DETAYLARI:")
+            print(f"Tespit edilen toplam obje: {len(results[0].boxes)}")
+        except Exception as e:
+            print(f"   ❌ HATA (Röle Tahmini): {e}")
+            return []
+        
+        relays = []
+        for i, box in enumerate(results[0].boxes):
+            xyxy = box.xyxy[0].cpu().numpy()
+            conf = float(box.conf[0])
+            class_id = int(box.cls[0])
+            
+            # Koordinatları render zoom'a göre ayarla
+            x1, y1, x2, y2 = xyxy / self.render_zoom
+            
+            relay = {
+                'bbox': [float(x1), float(y1), float(x2), float(y2)],
+                'confidence': conf,
+                'center': [(x1 + x2) / 2, (y1 + y2) / 2],
+                'class_id': class_id
+            }
+            relays.append(relay)
+            
+            print(f"  Röle #{i+1}: bbox=[{x1:.1f}, {y1:.1f}, {x2:.1f}, {y2:.1f}], conf={conf:.3f}, class={class_id}")
+        
+        # Pozisyona göre sırala ve ID ata
+        relays.sort(key=lambda r: (r['center'][1], r['center'][0]))
+        for i, relay in enumerate(relays):
+            relay['id'] = i + 1
+        
+        print(f"\n✅ Toplam {len(relays)} röle tespit edildi\n")
+        return relays
+
+    def _analyze_vectors(self, page):
+        try:
+            drawings = page.get_drawings()
+            if not drawings: return None
+            return analyze_page_vectors(drawings=drawings, page_rect=page.rect, page_number=page.number, config=self.uvp_config)
+        except: return None
+
+    def _analyze_connections(self, page):
+        # Config değerlerini UI'dan al (zaten sync_config ile güncellendi)
+        tol_conn = self.config['analysis'].get('connection_tolerance', 15)
+        dist_cluster = self.config['analysis'].get('clustering_distance', 10)
+        min_r = self.config['connection_points'].get('min_radius', 1.0)
+        max_r = self.config['connection_points'].get('max_radius', 5.0)
+        must_fill = self.config['connection_points'].get('must_be_filled', True)
+        
+        text_config = self.config.get('text_search', {})
+        search_radius = text_config.get('search_radius', 20)
+        
+        # DÜZELTME 1: Regex güncellemesi (küçük harfler ve /)
+        label_pattern = text_config.get('label_pattern', r"^[a-zA-Z0-9/\-\+\.]+$")
+        
+        try:
+            page_words = self._extract_text_from_page(page)
+        except:
+            page_words = []
+
+        if not self.vector_analysis or not self.vector_analysis.structural_groups:
+            return {'plc_connections': [], 'relay_connections': [], 'total': 0}
+        
+        connections = {'plc_connections': [], 'relay_connections': [], 'total': 0}
+        
+        # ================== PLC Bağlantıları ==================
+        for plc in self.plcs:
+            plc_conn = self._process_device_connections(
+                device=plc,
+                device_type='PLC',
+                page_words=page_words,
+                tol_conn=tol_conn,
+                dist_cluster=dist_cluster,
+                min_r=min_r,
+                max_r=max_r,
+                must_fill=must_fill,
+                search_radius=search_radius,
+                label_pattern=label_pattern
+            )
+            
+            connections['plc_connections'].append(plc_conn)
+            connections['total'] += plc_conn['count']
+        
+        # ================== RÖLE Bağlantıları ==================
+        for relay in self.relays:
+            relay_conn = self._process_device_connections(
+                device=relay,
+                device_type='Röle',
+                page_words=page_words,
+                tol_conn=tol_conn,
+                dist_cluster=dist_cluster,
+                min_r=min_r,
+                max_r=max_r,
+                must_fill=must_fill,
+                search_radius=search_radius,
+                label_pattern=label_pattern
+            )
+            
+            connections['relay_connections'].append(relay_conn)
+            connections['total'] += relay_conn['count']
+        
+        return connections
+    
+    def _process_device_connections(self, device, device_type, page_words, tol_conn, dist_cluster, 
+                                     min_r, max_r, must_fill, search_radius, label_pattern):
+        """PLC veya Röle için bağlantıları işle"""
+        device_conn = {
+            'device_id': device['id'],
+            'device_type': device_type,
+            'bbox': device['bbox'],
+            'lines': [],
+            'raw_points': [],
+            'unique_points': [],
+            'count': 0
+        }
+        
+        device_bbox = device['bbox']
+        
+        # Bağlantı noktalarını bul
+        for group in self.vector_analysis.structural_groups:
+            for circle in group.circles:
+                if (min_r <= circle.radius <= max_r) and (not must_fill or circle.is_filled):
+                    if self._point_in_bbox(circle.center, device_bbox, tolerance=tol_conn):
+                        device_conn['raw_points'].append(circle.center)
+                        device_conn['lines'].append(group.group_id)
+            for path in group.elements:
+                points = [path.start_point, path.end_point]
+                for p in points:
+                    if self._point_in_bbox(p, device_bbox, tolerance=tol_conn):
+                        device_conn['raw_points'].append(p)
+                        device_conn['lines'].append(group.group_id)
+        
+        # Kümeleme - tekrar eden noktaları birleştir
+        unique_points_list = []
+        for p in device_conn['raw_points']:
+            is_duplicate = False
+            for up_data in unique_points_list:
+                up = up_data['point']
+                dist = ((p.x - up.x)**2 + (p.y - up.y)**2)**0.5
+                if dist < dist_cluster:
+                    is_duplicate = True
+                    break
+            if not is_duplicate:
+                label = self._find_closest_text(p, page_words, search_radius, label_pattern)
+                unique_points_list.append({'point': p, 'label': label})
+        
+        # Bağlantı Takibi
+        print(f"\n🔍 {device_type} #{device['id']} Bağlantı Analizi:")
+        for i, point_data in enumerate(unique_points_list):
+            point = point_data['point']
+            pin_label = point_data.get('label', '?')
+            
+            print(f"   🕵️‍♂️ İzleniyor: Pin '{pin_label}' @ ({point.x:.1f}, {point.y:.1f})")
+            
+            exclude_device = {
+                'id': device['id'],
+                'type': 'plc' if device_type == 'PLC' else 'relay'
+            }
+            
+            targets = self.connection_tracer.trace_connection(
+                start_point=point,
+                vector_analysis=self.vector_analysis,
+                terminals=self.terminals,
+                plcs=self.plcs,
+                relays=self.relays,
+                exclude_device=exclude_device
+            )
+            
+            # DÜZELTME 2: Scan Strip / Busbar Taraması (YENİ ÖZELLİK)
+            # Bağlantının ait olduğu hat boyunca "070/P24.i1" gibi yatay etiketleri tara
+            potential_label = self._scan_potential_labels(point, self.vector_analysis, page_words)
+            if potential_label:
+                point_data['wire_label'] = potential_label
+                print(f"   ✨ Potansiyel Bulundu: {potential_label}")
+
+            # Hedefleri işle
+            point_data['targets'] = []
+            
+            if targets:
+                for target in targets:
+                    t_type = target.get('type')
+                    t_label = target.get('label')
+                    
+                    target_pin = self._find_target_pin(target, page_words)
+                    if target_pin:
+                        target['target_pin'] = target_pin
+                        print(f"      🎯 Hedef: {t_type} -> {t_label}:{target_pin}")
+                    else:
+                        print(f"      🎯 Hedef: {t_type} -> {t_label}")
+                    
+                    point_data['targets'].append(target)
+            else:
+                print(f"      ❌ Hedef bulunamadı")
+        
+        device_conn['unique_points'] = unique_points_list
+        device_conn['count'] = len(unique_points_list)
+        device_conn['lines'] = list(set(device_conn['lines']))
+        
+        # BMK/Etiket arama
+        if device_type == 'PLC':
+            bmk_label = self._find_bmk(device_bbox, page_words)
+            device_conn['bmk'] = bmk_label
+        elif device_type == 'Röle':
+            bmk_label = self._find_relay_bmk(device_bbox, page_words)
+            device_conn['bmk'] = bmk_label
+            internal_pins = self._find_relay_internal_pins(device_bbox, page_words, unique_points_list)
+            device_conn['internal_pins'] = internal_pins
+        
+        return device_conn
+
+    def _scan_potential_labels(self, start_point, vector_analysis, words):
+        """
+        DÜZELTME 3: Dikey Mesafe Filtresi ile Hassas Hat Okuma
+        """
+        relevant_groups = []
+        for group in vector_analysis.structural_groups:
+            matches = False
+            for elem in group.elements:
+                d1 = ((elem.start_point.x - start_point.x)**2 + (elem.start_point.y - start_point.y)**2)**0.5
+                d2 = ((elem.end_point.x - start_point.x)**2 + (elem.end_point.y - start_point.y)**2)**0.5
+                if d1 < 5.0 or d2 < 5.0: matches = True; break
+            if matches: relevant_groups.append(group)
+        
+        if not relevant_groups: return None
+        
+        candidates = []
+        
+        for group in relevant_groups:
+            for elem in group.elements:
+                # Yatay çizgi mi?
+                if abs(elem.start_point.y - elem.end_point.y) < 2.0:
+                    x1, x2 = sorted([elem.start_point.x, elem.end_point.x])
+                    y = (elem.start_point.y + elem.end_point.y) / 2
+                    length = x2 - x1
+                    if length < 20: continue 
+                    
+                    # 1. İlk olarak sadece yatayda uygun olanları topla
+                    #    Kutuyu daralttım (y-20)
+                    search_box = [x1 - 10, y - 20, x2 + 10, y + 2] 
+                    
+                    line_words = []
+                    for w in words:
+                        wx, wy = w['center']
+                        if (search_box[0] <= wx <= search_box[2] and search_box[1] <= wy <= search_box[3]):
+                            # 2. KRİTİK: Dikey Mesafe Filtresi
+                            # Kelime merkezi ile çizgi arasındaki mesafe
+                            dist_y = abs(y - wy)
+                            
+                            # Eğer kelime çizgiye 12 pikselden daha uzaksa, muhtemelen üstteki hatta aittir.
+                            if dist_y < 12.0:
+                                line_words.append(w)
+                    
+                    if line_words:
+                        line_words.sort(key=lambda w: w['bbox'][0])
+                        full_text = "".join([w['text'] for w in line_words])
+                        if len(full_text) > 2: candidates.append(full_text)
+
+        potential_pattern = re.compile(r'[a-zA-Z]') 
+        priority_candidates = [c for c in candidates if potential_pattern.search(c)]
+        
+        if priority_candidates: return priority_candidates[0] 
+        elif candidates: return candidates[0]
+        return None
+
+    def _find_target_pin(self, target, words):
+        """Hedef cihazın bağlantı noktasındaki pin etiketini bulur."""
+        if not target or 'target_endpoint' not in target:
+            return None
+        
+        endpoint = target['target_endpoint']
+        ex, ey = endpoint
+        
+        # Arama yarıçapı ve pattern
+        search_radius = self.config.get('target_pin_search', {}).get('radius', 20.0)
+        pin_pattern = self.config.get('target_pin_search', {}).get('pattern', r'^[a-zA-Z0-9\.\-\+]+$')
+        
+        best_pin = None
+        min_dist = float('inf')
+        
+        for word in words:
+            wx, wy = word['center']
+            text = word['text']
+            
+            dist = ((ex - wx)**2 + (ey - wy)**2)**0.5
+            
+            if dist < search_radius and dist < min_dist:
+                if re.match(pin_pattern, text):
+                    min_dist = dist
+                    best_pin = text
+        
+        return best_pin
+
+    def _find_bmk(self, plc_bbox, words):
+        x1, y1, x2, y2 = plc_bbox
+        bmk_config = self.config.get('bmk_search', {})
+        area = bmk_config.get('search_area', [-100, -50, 20, 50])
+        pattern = bmk_config.get('pattern', r'^-[A-Za-z0-9]+$')
+        search_bbox = [x1 + area[0], y1 + area[1], x1 + area[2], y1 + area[3]]
+        
+        best_bmk = None
+        min_dist = float('inf')
+        
+        for word in words:
+            wx, wy = word['center']
+            text = word['text']
+            if (search_bbox[0] <= wx <= search_bbox[2] and search_bbox[1] <= wy <= search_bbox[3]):
+                dist = ((x1 - wx)**2 + (y1 - wy)**2)**0.5
+                if re.match(pattern, text):
+                    if dist < min_dist:
+                        min_dist = dist
+                        best_bmk = text
+        return best_bmk
+
+    def _find_relay_bmk(self, relay_bbox, words):
+        """Röle BMK tespiti"""
+        x1, y1, x2, y2 = relay_bbox
+        relay_bmk_config = self.config.get('relay_bmk_search', {})
+        area = relay_bmk_config.get('search_area', [-80, -30, 10, 30])
+        pattern = relay_bmk_config.get('pattern', r'^-[A-Za-z0-9]+$')
+        
+        search_bbox = [x1 + area[0], y1 + area[1], x1 + area[2], y1 + area[3]]
+        
+        best_bmk = None
+        min_dist = float('inf')
+        
+        print(f"\n🔍 Röle BMK Arama: bbox=({x1:.1f}, {y1:.1f}, {x2:.1f}, {y2:.1f})")
+        print(f"   Arama alanı: ({search_bbox[0]:.1f}, {search_bbox[1]:.1f}, {search_bbox[2]:.1f}, {search_bbox[3]:.1f})")
+        
+        for word in words:
+            wx, wy = word['center']
+            text = word['text']
+            
+            if (search_bbox[0] <= wx <= search_bbox[2] and search_bbox[1] <= wy <= search_bbox[3]):
+                dist = ((x1 - wx)**2 + (y1 - wy)**2)**0.5
+                if re.match(pattern, text):
+                    print(f"   ✅ BMK adayı bulundu: '{text}' @ ({wx:.1f}, {wy:.1f}), mesafe={dist:.1f}")
+                    if dist < min_dist:
+                        min_dist = dist
+                        best_bmk = text
+        
+        if best_bmk:
+            print(f"   🎯 Röle BMK: {best_bmk}")
+        else:
+            print("   ❌ Röle BMK bulunamadı")
+            
+        return best_bmk
+
+    def _find_relay_internal_pins(self, relay_bbox, words, connection_points):
+        """Röle içerisindeki bağlantı noktalarının pin etiketlerini OCR ile bulur."""
+        x1, y1, x2, y2 = relay_bbox
+        internal_pins = {}
+        
+        print(f"\n📖 Röle İç Pin OCR: bbox=({x1:.1f}, {y1:.1f}, {x2:.1f}, {y2:.1f})")
+        
+        # Röle içindeki tüm metinleri bul
+        relay_internal_texts = []
+        for word in words:
+            wx, wy = word['center']
+            text = word['text']
+            
+            # Metin röle bbox'ı içinde mi?
+            if (x1 <= wx <= x2 and y1 <= wy <= y2):
+                relay_internal_texts.append({
+                    'text': text,
+                    'center': (wx, wy),
+                    'bbox': word['bbox']
+                })
+        
+        print(f"   📝 Röle içinde {len(relay_internal_texts)} metin bulundu:")
+        for txt in relay_internal_texts:
+            print(f"      - '{txt['text']}' @ ({txt['center'][0]:.1f}, {txt['center'][1]:.1f})")
+        
+        # Her bağlantı noktası için en yakın iç metni bul
+        pin_search_radius = self.config.get('relay_pin_search', {}).get('radius', 15.0)
+        pin_pattern = self.config.get('relay_pin_search', {}).get('pattern', r'^[A-Z0-9\.\-]+$')
+        
+        for idx, point_data in enumerate(connection_points):
+            point = point_data['point']
+            px, py = point.x, point.y
+            
+            # Bu nokta röle içinde mi?
+            if not (x1 <= px <= x2 and y1 <= py <= y2):
+                continue
+            
+            # En yakın iç metni bul
+            best_pin = None
+            min_dist = float('inf')
+            
+            for txt_data in relay_internal_texts:
+                tx, ty = txt_data['center']
+                dist = ((px - tx)**2 + (py - ty)**2)**0.5
+                
+                if dist < pin_search_radius and dist < min_dist:
+                    if re.match(pin_pattern, txt_data['text']):
+                        min_dist = dist
+                        best_pin = txt_data['text']
+            
+            if best_pin:
+                internal_pins[idx] = best_pin
+                # Eğer point_data'da label yoksa veya generic ise, iç pin'i kullan
+                if not point_data.get('label') or point_data.get('label') == '?':
+                    point_data['label'] = best_pin
+                    point_data['label_source'] = 'internal_ocr'
+                print(f"   🔌 Nokta #{idx}: Pin='{best_pin}' (mesafe={min_dist:.1f})")
+        
+        return internal_pins
+
+    def _extract_text_from_page(self, page):
+        words = page.get_text("words")
+        extracted = []
+        for w in words:
+            extracted.append({'bbox': (w[0], w[1], w[2], w[3]), 'text': w[4], 'center': ((w[0]+w[2])/2, (w[1]+w[3])/2)})
+        return extracted
+
+    def _find_closest_text(self, point, words, radius, pattern):
+        best_text = None
+        min_dist = float('inf')
+        for word in words:
+            if not re.match(pattern, word['text']): continue
+            wx, wy = word['center']
+            dist = ((point.x - wx)**2 + (point.y - wy)**2)**0.5
+            if dist < radius and dist < min_dist:
+                min_dist = dist
+                best_text = word['text']
+        return best_text
+
+    def _point_in_bbox(self, point, bbox, tolerance=0):
+        x, y = point.x, point.y
+        x1, y1, x2, y2 = bbox
+        return (x1 - tolerance <= x <= x2 + tolerance and y1 - tolerance <= y <= y2 + tolerance)
+
+    def _get_target_display_name(self, target):
+        """
+        Hedef cihaz için BMK:PIN formatında görüntü adı oluşturur.
+        """
+        if not target:
+            return "?"
+        
+        t_type = target.get('type')
+        t_index = target.get('index')
+        target_pin = target.get('target_pin')
+        
+        if t_type == 'terminal':
+            return target.get('label', f"K{t_index}")
+        
+        if t_type == 'plc':
+            bmk = None
+            for plc_conn in self.connections.get('plc_connections', []):
+                if plc_conn['device_id'] == t_index:
+                    bmk = plc_conn.get('bmk')
+                    break
+            if bmk and target_pin: return f"{bmk}:{target_pin}"
+            elif bmk: return bmk
+            elif target_pin: return f"PLC#{t_index}:{target_pin}"
+            return f"PLC#{t_index}"
+        
+        if t_type == 'relay':
+            bmk = None
+            for relay_conn in self.connections.get('relay_connections', []):
+                if relay_conn['device_id'] == t_index:
+                    bmk = relay_conn.get('bmk')
+                    break
+            if bmk and target_pin: return f"{bmk}:{target_pin}"
+            elif bmk: return bmk
+            elif target_pin: return f"Röle#{t_index}:{target_pin}"
+            return f"Röle#{t_index}"
+        
+        return target.get('label', '?')
+
+    def show_results(self):
+        self.results_text.delete(1.0, tk.END)
+        self.log("📊 ANALİZ SONUÇLARI", "header")
+        self.log("="*30)
+        self.log(f"📦 Toplam PLC: {len(self.plcs)}")
+        self.log(f"⚡ Toplam Röle: {len(self.relays)}")
+        self.log(f"🔗 Toplam Bağlantı: {self.connections['total']}\n")
+        
+        # Röle detayları
+        if self.relays:
+            self.log("⚡ RÖLE DETAYLARI:", "header")
+            for relay in self.relays:
+                x, y = relay['center']
+                conf = relay['confidence']
+                bmk = None
+                for relay_conn in self.connections.get('relay_connections', []):
+                    if relay_conn['device_id'] == relay['id']:
+                        bmk = relay_conn.get('bmk')
+                        break
+                if bmk:
+                    self.log(f"  {bmk}: Konum=({x:.1f}, {y:.1f}), Güven={conf:.2%}")
+                else:
+                    self.log(f"  Röle #{relay['id']}: Konum=({x:.1f}, {y:.1f}), Güven={conf:.2%}")
+            self.log("")
+        
+        # PLC bağlantıları (DÜZELTME 4: Wire Label Gösterimi)
+        self.log("📦 PLC BAĞLANTILARI:", "header")
+        for plc_conn in self.connections['plc_connections']:
+            if plc_conn.get('bmk'): title = plc_conn['bmk']
+            else: title = f"PLC #{plc_conn['device_id']}"
+            self.log(title, "header")
+            
+            for point_data in plc_conn['unique_points']:
+                pin = point_data.get('label') or "?"
+                wire_lbl = point_data.get('wire_label') # YENİ
+                
+                targets = point_data.get('targets', [])
+                
+                # Format: PIN [WireLabel] -> HEDEF
+                prefix = f"  🔹 {pin}"
+                if wire_lbl: prefix += f" ──[{wire_lbl}]──"
+                else: prefix += " ────"
+
+                if targets:
+                    for target in targets:
+                        t_type = target.get('type')
+                        t_display = self._get_target_display_name(target)
+                        icon = "🔌" if t_type == 'terminal' else ("📦" if t_type == 'plc' else ("⚡" if t_type == 'relay' else ""))
+                        self.log(f"{prefix}→ {icon}{t_display}")
+                elif wire_lbl:
+                     # Hedef yok ama hat etiketi var (Potansiyel hattı gibi)
+                     self.log(f"{prefix}→ (Potansiyel Hattı)")
+                else:
+                    self.log(f"{prefix}→ ?")
+            self.log("")
+        
+        # Röle bağlantıları
+        if self.connections.get('relay_connections'):
+            self.log("⚡ RÖLE BAĞLANTILARI:", "header")
+            for relay_conn in self.connections['relay_connections']:
+                if relay_conn.get('bmk'): title = relay_conn['bmk']
+                else: title = f"Röle #{relay_conn['device_id']}"
+                self.log(title, "header")
+                
+                if relay_conn.get('internal_pins'):
+                    self.log(f"  📖 Tespit edilen iç pinler: {len(relay_conn['internal_pins'])}")
+                
+                for point_data in relay_conn['unique_points']:
+                    pin = point_data.get('label') or "?"
+                    label_src = point_data.get('label_source', '')
+                    pin_display = f"{pin}" if label_src != 'internal_ocr' else f"{pin}*"
+                    wire_lbl = point_data.get('wire_label') # YENİ
+
+                    prefix = f"  ⚡ {pin_display}"
+                    if wire_lbl: prefix += f" ──[{wire_lbl}]──"
+                    else: prefix += " ────"
+                    
+                    targets = point_data.get('targets', [])
+                    
+                    if targets:
+                        for target in targets:
+                            t_type = target.get('type')
+                            t_display = self._get_target_display_name(target)
+                            icon = "🔌" if t_type == 'terminal' else ("📦" if t_type == 'plc' else ("⚡" if t_type == 'relay' else ""))
+                            self.log(f"{prefix}→ {icon}{t_display}")
+                    elif wire_lbl:
+                        self.log(f"{prefix}→ (Potansiyel Hattı)")
+                    else:
+                        self.log(f"{prefix}→ ?")
+                self.log("")
+        
+        # Hat Etiketleri (Klasik Yöntem)
+        if hasattr(self, 'wire_labels') and self.wire_labels:
+            self.log("🏷️  DİĞER HAT ETİKETLERİ:", "header")
+            for wire_label in self.wire_labels:
+                if wire_label.connected_device_type:
+                    device = wire_label.connected_device
+                    device_type = wire_label.connected_device_type
+                    
+                    if device_type == 'plc':
+                        bmk = None
+                        for plc_conn in self.connections.get('plc_connections', []):
+                            if plc_conn['device_id'] == device['id']:
+                                bmk = plc_conn.get('bmk')
+                                break
+                        device_label = bmk or f"PLC#{device['id']}"
+                    elif device_type == 'relay':
+                        bmk = None
+                        for relay_conn in self.connections.get('relay_connections', []):
+                            if relay_conn['device_id'] == device['id']:
+                                bmk = relay_conn.get('bmk')
+                                break
+                        device_label = bmk or f"Röle#{device['id']}"
+                    else:
+                        device_label = "?"
+                    
+                    self.log(f"  📝 {wire_label.label} ──→ {device_label}")
+                else:
+                    self.log(f"  📝 {wire_label.label}")
+            self.log("")
+
+    def draw_results(self):
+        """Sonuçları görselleştir - Gelişmiş Debug ve Renkli Bağlantılar"""
+        img_with_results = self.display_image.copy()
+        draw = ImageDraw.Draw(img_with_results)
+        
+        current_scale = self.base_scale * self.zoom_factor
+        is_debug = self.vars['debug'].get()
+        
+        # Renkler
+        COLOR_PLC = "#007acc"      # Mavi
+        COLOR_TERM = "#28a745"     # Yeşil
+        COLOR_PIN = "#ff7f0e"      # Turuncu (Pin)
+        COLOR_RAW = "#aaaaaa"      # Gri (Ham Nokta)
+        COLOR_SEARCH = "#ffff00"   # Sarı (Arama Alanı)
+        
+        CONN_COLORS = [
+            "#00ffff", "#ff00ff", "#ffff00", "#ff0000", 
+            "#00ff00", "#0000ff", "#ff9900", "#9900ff"
+        ]
+        
+        try:
+            font = ImageFont.truetype("arial.ttf", int(12 * current_scale))
+            font_small = ImageFont.truetype("arial.ttf", int(10 * current_scale))
+        except:
+            font = ImageFont.load_default()
+            font_small = ImageFont.load_default()
+
+        # 1. Bağlantı Yollarını Çiz
+        color_idx = 0
+        
+        # PLC Bağlantıları
+        for plc_conn in self.connections.get('plc_connections', []):
+            for point_data in plc_conn['unique_points']:
+                trace_color = CONN_COLORS[color_idx % len(CONN_COLORS)]
+                color_idx += 1
+                
+                targets = point_data.get('targets', [])
+                for target in targets:
+                    if 'path_elements' in target:
+                        for elem in target['path_elements']:
+                            if hasattr(elem, 'start_point') and hasattr(elem, 'end_point'):
+                                p1 = elem.start_point
+                                p2 = elem.end_point
+                                sp1 = (int(p1.x * current_scale * 2), int(p1.y * current_scale * 2))
+                                sp2 = (int(p2.x * current_scale * 2), int(p2.y * current_scale * 2))
+                                draw.line([sp1, sp2], fill=trace_color, width=int(3 * current_scale))
+        
+        # Röle Bağlantıları
+        for relay_conn in self.connections.get('relay_connections', []):
+            for point_data in relay_conn['unique_points']:
+                trace_color = CONN_COLORS[color_idx % len(CONN_COLORS)]
+                color_idx += 1
+                
+                targets = point_data.get('targets', [])
+                for target in targets:
+                    if 'path_elements' in target:
+                        for elem in target['path_elements']:
+                            if hasattr(elem, 'start_point') and hasattr(elem, 'end_point'):
+                                p1 = elem.start_point
+                                p2 = elem.end_point
+                                sp1 = (int(p1.x * current_scale * 2), int(p1.y * current_scale * 2))
+                                sp2 = (int(p2.x * current_scale * 2), int(p2.y * current_scale * 2))
+                                draw.line([sp1, sp2], fill=trace_color, width=int(3 * current_scale))
+
+        # 2. PLC'leri Çiz
+        for plc in self.plcs:
+            x1, y1, x2, y2 = plc['bbox']
+            sx1, sy1, sx2, sy2 = [int(c * current_scale * 2) for c in [x1, y1, x2, y2]]
+            draw.rectangle([sx1, sy1, sx2, sy2], outline=COLOR_PLC, width=3)
+            draw.text((sx1, sy1-20), f"PLC #{plc['id']}", fill=COLOR_PLC, font=font)
+        
+        # 2.5 Röleleri Çiz
+        COLOR_RELAY = "#9b59b6"  # Mor
+        for relay in self.relays:
+            x1, y1, x2, y2 = relay['bbox']
+            sx1, sy1, sx2, sy2 = [int(c * current_scale * 2) for c in [x1, y1, x2, y2]]
+            draw.rectangle([sx1, sy1, sx2, sy2], outline=COLOR_RELAY, width=3)
+            conf = relay['confidence']
+            draw.text((sx1, sy1-20), f"Röle #{relay['id']} ({conf:.0%})", fill=COLOR_RELAY, font=font)
+
+        # 3. Klemensleri Çiz
+        for term in self.terminals:
+            cx, cy = term['center'].x, term['center'].y
+            scx, scy = int(cx * current_scale * 2), int(cy * current_scale * 2)
+            r = int(term['radius'] * current_scale * 2)
+            draw.ellipse([scx-r, scy-r, scx+r, scy+r], outline=COLOR_TERM, width=2)
+            label = term.get('group_label') or term.get('label')
+            if label:
+                draw.text((scx+r+5, scy-10), str(label), fill=COLOR_TERM, font=font_small)
+            if is_debug:
+                read_r = self.vars['reader_radius'].get() * current_scale * 2
+                draw.ellipse([scx-read_r, scy-read_r, scx+read_r, scy+read_r], outline="#ff9999", width=1)
+
+        # 4. PLC Bağlantı Detayları (Debug)
+        if self.connections:
+            for plc_conn in self.connections['plc_connections']:
+                if is_debug:
+                    for rp in plc_conn.get('raw_points', []):
+                        rpx, rpy = int(rp.x * current_scale * 2), int(rp.y * current_scale * 2)
+                        draw.ellipse([rpx-2, rpy-2, rpx+2, rpy+2], fill=COLOR_RAW)
+
+                for point_data in plc_conn['unique_points']:
+                    p = point_data['point']
+                    px, py = int(p.x * current_scale * 2), int(p.y * current_scale * 2)
+                    
+                    r = 4
+                    draw.ellipse([px-r, py-r, px+r, py+r], fill=COLOR_PIN, outline="white")
+                    
+                    # DÜZELTME 5: Debug Modunda Wire Label Gösterimi
+                    if is_debug and point_data.get('wire_label'):
+                        draw.text((px+20, py), f"WL: {point_data['wire_label']}", fill="magenta", font=font)
+                    
+                    if is_debug:
+                        search_r = self.vars['reader_radius'].get() * current_scale * 2 
+                        draw.ellipse([px-search_r, py-search_r, px+search_r, py+search_r], outline=COLOR_SEARCH, width=1)
+                        label = point_data.get('label')
+                        if label:
+                            draw.text((px+10, py-10), f"Pin: {label}", fill=COLOR_SEARCH, font=font_small)
+                            draw.line([px, py, px+10, py-5], fill=COLOR_SEARCH, width=1)
+                        else:
+                            draw.text((px+10, py-10), "Pin: ?", fill="red", font=font_small)
+        
+        # 5. Hat Etiketlerini Çiz
+        if hasattr(self, 'wire_labels') and self.wire_labels and hasattr(self, 'vector_analysis') and self.vector_analysis:
+            COLOR_WIRE_LABEL = "#FF00FF"
+            for wire_label in self.wire_labels:
+                try:
+                    wx, wy = wire_label.position
+                    swx, swy = int(wx * current_scale * 2), int(wy * current_scale * 2)
+                    group_id = wire_label.group_id
+                    if group_id < len(self.vector_analysis.structural_groups):
+                        group = self.vector_analysis.structural_groups[group_id]
+                        for elem in group.elements:
+                            p1 = elem.start_point
+                            p2 = elem.end_point
+                            sp1 = (int(p1.x * current_scale * 2), int(p1.y * current_scale * 2))
+                            sp2 = (int(p2.x * current_scale * 2), int(p2.y * current_scale * 2))
+                            draw.line([sp1, sp2], fill=COLOR_WIRE_LABEL, width=int(2 * current_scale))
+                    
+                    r = 6
+                    draw.rectangle([swx-r, swy-r, swx+r, swy+r], fill=COLOR_WIRE_LABEL, outline="white", width=2)
+                    label_text = f"🏷️  {wire_label.label}"
+                    draw.text((swx+r+5, swy-10), label_text, fill=COLOR_WIRE_LABEL, font=font)
+                except Exception as e:
+                    print(f"⚠️  Wire label çizim hatası: {e}")
+
+        self.tk_image = ImageTk.PhotoImage(img_with_results)
+        self.canvas.delete("all")
+        self.canvas.create_image(0, 0, anchor=tk.NW, image=self.tk_image)
+        self.canvas.config(scrollregion=self.canvas.bbox("all"))
+
+if __name__ == "__main__":
+    root = tk.Tk()
+    app = PDFPLCConnectionAnalyzer(root)
+    root.mainloop()
