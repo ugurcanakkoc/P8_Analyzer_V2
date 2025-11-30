@@ -59,7 +59,7 @@ class TerminalReader:
         profile = SearchProfile(
             search_radius=self.search_radius,
             direction=direction_enum,
-            regex_pattern=r'^[A-Z0-9]+$',  # Alphanumeric: PE, N, L1, 5, etc.
+            regex_pattern=r'^[A-Za-z0-9\.\-\/]+$',  # Alphanumeric + dots/hyphens (e.g. P24.i2, -X1, etc.)
             use_ocr_fallback=True  # Enable OCR fallback for better detection
         )
         
