@@ -30,9 +30,9 @@ class TerminalGrouper:
         """
         self.config = config or {}
         self.search_direction = self.config.get('search_direction', 'left')
-        self.search_radius = self.config.get('search_radius', 25.0)  # Narrower search
+        self.search_radius = self.config.get('search_radius', 100.0)  # Increased from 25.0 to 100.0
         self.y_tolerance = self.config.get('y_tolerance', 15.0)  # For finding neighbors
-        self.label_pattern = self.config.get('label_pattern', r'^-X.*')
+        self.label_pattern = self.config.get('label_pattern', r'^-?X.*') # Allow optional hyphen at start, just in case
         self.neighbor_x_distance = self.config.get('neighbor_x_distance', 50.0)
 
     def group_terminals(self, terminals: List[Dict], text_engine: HybridTextEngine) -> List[Dict]:
@@ -73,14 +73,14 @@ class TerminalGrouper:
                 terminal['group_source'] = f"{result.source}_direct"
                 logger.debug(f"Terminal at ({cx:.0f},{cy:.0f}) -> Direct group: {result.text}")
             else:
-                # No direct group label, try to inherit from left neighbor
-                neighbor = self._find_left_neighbor(terminal, sorted_terminals[:i])
+                # No direct group label, try to inherit from parent (left or top neighbor)
+                parent = self._find_parent_terminal(terminal, sorted_terminals[:i])
                 
-                if neighbor and neighbor.get('group_label'):
+                if parent and parent.get('group_label'):
                     # Inherit group from neighbor
-                    terminal['group_label'] = neighbor['group_label']
+                    terminal['group_label'] = parent['group_label']
                     terminal['group_source'] = 'inherited'
-                    logger.debug(f"Terminal at ({cx:.0f},{cy:.0f}) -> Inherited group: {neighbor['group_label']}")
+                    logger.debug(f"Terminal at ({cx:.0f},{cy:.0f}) -> Inherited group: {parent['group_label']}")
                 else:
                     # No group found
                     terminal['group_label'] = None
@@ -88,69 +88,88 @@ class TerminalGrouper:
                     logger.debug(f"Terminal at ({cx:.0f},{cy:.0f}) -> No group")
             
             # Create full label
-            if terminal.get('group_label') and terminal.get('label') and terminal['label'] != '?':
-                terminal['full_label'] = f"{terminal['group_label']}:{terminal['label']}"
-            elif terminal.get('group_label'):
-                terminal['full_label'] = terminal['group_label']
-            else:
-                terminal['full_label'] = terminal.get('label', '?')
+            # User request: "Grupadı:Pin adı olacak"
+            # We enforce this format even if parts are missing (using 'UNK' or '?')
+            group = terminal.get('group_label') or "UNK"
+            pin = terminal.get('label') or "?"
+            
+            terminal['full_label'] = f"{group}:{pin}"
+            
+            # Log the assignment
+            logger.debug(f"Terminal ID assigned: {terminal['full_label']} at {terminal['center']}")
         
         # Statistics
         grouped_count = sum(1 for t in sorted_terminals if t.get('group_label'))
         inherited_count = sum(1 for t in sorted_terminals if t.get('group_source') == 'inherited')
         logger.info(f"Grouped {grouped_count}/{len(sorted_terminals)} terminals ({inherited_count} inherited)")
         
-        # Unique groups
-        unique_groups = set(t['group_label'] for t in sorted_terminals if t.get('group_label'))
-        if unique_groups:
-            logger.info(f"Found groups: {', '.join(sorted(unique_groups))}")
+        # Log all generated IDs for verification
+        all_ids = [t['full_label'] for t in sorted_terminals]
+        logger.info(f"Generated Terminal IDs: {', '.join(all_ids)}")
         
         return sorted_terminals
     
-    def _find_left_neighbor(self, terminal: Dict, previous_terminals: List[Dict]) -> Optional[Dict]:
+    def _find_parent_terminal(self, terminal: Dict, previous_terminals: List[Dict]) -> Optional[Dict]:
         """
-        Find the nearest terminal to the left with similar Y coordinate.
+        Find a parent terminal to inherit group from.
+        Prioritizes scanning to the LEFT on the same Y level until a labeled terminal is found.
         
         Args:
             terminal: Current terminal
             previous_terminals: Terminals processed before this one (sorted)
             
         Returns:
-            Left neighbor terminal or None
+            Parent terminal or None
         """
         if not previous_terminals:
             return None
         
         cx, cy = terminal['center']
         
-        # Find terminals to the left with similar Y coordinate
+        # 1. Horizontal Scan (Left, Same Y)
+        # Iterate backwards through previous terminals (nearest first)
+        for t in reversed(previous_terminals):
+            tx, ty = t['center']
+            
+            # Strict Y tolerance (Must be on the same line)
+            if abs(cy - ty) > self.y_tolerance:
+                continue
+            
+            # Since 'previous_terminals' is sorted by Y then X, 
+            # and we are in the same Y range, 't' is guaranteed to be to the left (or same pos).
+            
+            # Check if this neighbor has a valid group label
+            if t.get('group_label'):
+                return t
+            
+            # If this neighbor has NO group label, we ignore it and continue scanning left.
+            # "bulana kadarda tarasın" (scan until found)
+        
+        # 2. Vertical Scan (Top, Same X)
+        # Only if no horizontal parent found.
+        # User warning: "y hizasında yüksekte varsa onu almamalı aynı y hizsında olmalı"
+        # This implies we should be very careful about vertical inheritance.
+        # We'll use a very strict X tolerance for vertical inheritance to ensure it's a true vertical strip.
+        
         candidates = []
         for t in previous_terminals:
             tx, ty = t['center']
             
-            # Must be to the left
-            if tx >= cx:
-                continue
+            dx = abs(cx - tx)
+            dy = abs(cy - ty)
             
-            # Must have similar Y (within tolerance)
-            y_diff = abs(ty - cy)
-            if y_diff > self.y_tolerance:
+            # Must be above (ty < cy)
+            if ty >= cy:
                 continue
-            
-            # Must be reasonably close in X
-            x_diff = cx - tx
-            if x_diff > self.neighbor_x_distance:
-                continue
-            
-            # Calculate distance (prioritize closer terminals)
-            distance = ((cx - tx)**2 + (cy - ty)**2)**0.5
-            candidates.append((distance, t))
+                
+            # Strict X alignment for vertical strips (e.g. 5.0 units)
+            if dx <= 5.0 and dy <= self.neighbor_x_distance:
+                candidates.append((dy, t))
         
         if candidates:
-            # Return closest neighbor
             candidates.sort(key=lambda x: x[0])
-            neighbor = candidates[0][1]
-            logger.debug(f"Found neighbor at ({neighbor['center'][0]:.0f},{neighbor['center'][1]:.0f})")
-            return neighbor
-        
+            for _, term in candidates:
+                if term.get('group_label'):
+                    return term
+                    
         return None
