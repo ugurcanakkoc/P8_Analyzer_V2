@@ -29,6 +29,40 @@ class AnalysisWorker(QThread):
             # Analizi başlat (PNG export yok, sadece veri)
             analysis_result = analyze_page_vectors(drawings, page_rect, self.page_num, DEFAULT_CONFIG)
             
+            # --- TERMINAL ANALİZİ (Klemens Bulma) ---
+            try:
+                from src.terminal_detector import TerminalDetector
+                from src.terminal_reader import TerminalReader
+                from src.terminal_grouper import TerminalGrouper
+                from src.text_engine import HybridTextEngine
+                
+                # 1. Klemensleri Tespit Et (Dairelerden)
+                detector = TerminalDetector()
+                terminals = detector.detect(analysis_result)
+                
+                if terminals:
+                    # 2. Metin Motorunu Hazırla
+                    text_engine = HybridTextEngine(languages=['en'])
+                    text_engine.load_page(page)
+                    
+                    # 3. Etiketleri Oku (1, 2, PE, N vb.)
+                    reader = TerminalReader()
+                    terminals = reader.read_labels(terminals, text_engine)
+                    
+                    # 4. Grupları Belirle (-X1, -X2 vb.)
+                    grouper = TerminalGrouper()
+                    terminals = grouper.group_terminals(terminals, text_engine)
+                    
+                    # 5. Sonucu Kaydet
+                    analysis_result.terminals = terminals
+                    print(f"Terminal Analizi Tamamlandı: {len(terminals)} klemens bulundu.")
+                    
+            except Exception as e:
+                print(f"Terminal analizi sırasında hata: {e}")
+                import traceback
+                traceback.print_exc()
+                # Ana analiz bozulmasın, devam et
+            
             self.finished.emit(analysis_result)
 
         except Exception as e:

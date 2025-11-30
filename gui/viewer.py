@@ -1,4 +1,4 @@
-from PyQt5.QtWidgets import QGraphicsView, QGraphicsScene, QGraphicsPathItem, QGraphicsRectItem, QGraphicsSimpleTextItem
+from PyQt5.QtWidgets import QGraphicsView, QGraphicsScene, QGraphicsPathItem, QGraphicsRectItem, QGraphicsSimpleTextItem, QGraphicsEllipseItem
 from PyQt5.QtCore import Qt, QRectF
 from PyQt5.QtGui import QPainter, QPen, QColor, QBrush, QPainterPath, QFont, QPixmap, QImage
 import pymupdf
@@ -31,9 +31,15 @@ class InteractiveGraphicsView(QGraphicsView):
         self.scene.setSceneRect(0, 0, page.rect.width, page.rect.height)
 
     def draw_analysis_result(self, result):
+        # 1. Hatları Çiz
         for i, group in enumerate(result.structural_groups):
             display_id = f"NET-{i+1:03d}"
             self._draw_group(group, display_id)
+            
+        # 2. Klemensleri Çiz
+        if hasattr(result, 'terminals') and result.terminals:
+            for term in result.terminals:
+                self._draw_terminal(term)
 
     def _draw_group(self, group, label_text):
         path = QPainterPath()
@@ -45,6 +51,25 @@ class InteractiveGraphicsView(QGraphicsView):
         path_item.setPen(QPen(QColor(group.color), 2.0, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
         path_item.setToolTip(f"ID: {label_text}")
         self.scene.addItem(path_item)
+
+    def _draw_terminal(self, terminal):
+        cx, cy = terminal['center']
+        radius = terminal['radius']
+        
+        # Daire çiz
+        ellipse = QGraphicsEllipseItem(cx - radius, cy - radius, radius * 2, radius * 2)
+        ellipse.setPen(QPen(Qt.blue, 1.0))
+        ellipse.setBrush(QBrush(QColor(0, 0, 255, 50)))
+        self.scene.addItem(ellipse)
+        
+        # Etiket yaz
+        label = terminal.get('full_label') or terminal.get('label')
+        if label and label != '?':
+            text = QGraphicsSimpleTextItem(str(label))
+            text.setPos(cx + radius + 2, cy - radius - 5)
+            text.setFont(QFont("Arial", 6))
+            text.setBrush(QBrush(Qt.blue))
+            self.scene.addItem(text)
 
     def set_mode(self, mode):
         self.mode = mode
