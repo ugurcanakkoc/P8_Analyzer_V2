@@ -4,7 +4,8 @@ import os
 import pymupdf
 from PyQt5.QtWidgets import (
     QMainWindow, QFileDialog, QToolBar, QAction,
-    QDockWidget, QTextEdit, QLabel, QMessageBox, QWidget, QVBoxLayout
+    QDockWidget, QTextEdit, QLabel, QMessageBox, QWidget, QVBoxLayout,
+    QTableWidget, QTableWidgetItem, QHeaderView
 )
 from PyQt5.QtCore import Qt
 
@@ -98,13 +99,34 @@ class MainWindow(QMainWindow):
         self.act_check.setEnabled(False)
         toolbar.addAction(self.act_check)
 
-        # Log panel
-        dock = QDockWidget("Loglar", self)
-        dock.setAllowedAreas(Qt.RightDockWidgetArea)
+        # --- DOCKS ---
+        
+        # 1. Log Panel (Right)
+        dock_log = QDockWidget("Loglar", self)
+        dock_log.setAllowedAreas(Qt.RightDockWidgetArea)
         self.log_text = QTextEdit()
         self.log_text.setReadOnly(True)
-        dock.setWidget(self.log_text)
-        self.addDockWidget(Qt.RightDockWidgetArea, dock)
+        dock_log.setWidget(self.log_text)
+        self.addDockWidget(Qt.RightDockWidgetArea, dock_log)
+
+        # 2. Connection Table (Bottom)
+        dock_table = QDockWidget("Bağlantı Listesi", self)
+        dock_table.setAllowedAreas(Qt.BottomDockWidgetArea | Qt.RightDockWidgetArea)
+        
+        self.conn_table = QTableWidget()
+        self.conn_table.setColumnCount(7)
+        self.conn_table.setHorizontalHeaderLabels([
+            "Source Tag", "Source Pin", 
+            "Target Tag", "Target Pin", 
+            "Wire Color", "Cross-Section", "Cable Tag"
+        ])
+        # Tablo ayarları
+        header = self.conn_table.horizontalHeader()
+        header.setSectionResizeMode(QHeaderView.Stretch)
+        self.conn_table.setAlternatingRowColors(True)
+        
+        dock_table.setWidget(self.conn_table)
+        self.addDockWidget(Qt.BottomDockWidgetArea, dock_table)
 
         # Status bar
         self.status_bar = self.statusBar()
@@ -159,6 +181,10 @@ class MainWindow(QMainWindow):
             self.act_check.setEnabled(False)
             if hasattr(self, "current_result"):
                 del self.current_result
+            
+            # Tabloyu temizle
+            self.conn_table.setRowCount(0)
+            
         except Exception as e:
             self.log(f"Sayfa yükleme hatası: {e}")
 
@@ -354,26 +380,80 @@ class MainWindow(QMainWindow):
             except Exception as e:
                 self.log(f"Label Matcher hatası: {e}")
 
-        # Reporting
+        # Reporting & Table Population
         self.log("\n====== BAĞLANTI RAPORU ======")
+        self.conn_table.setRowCount(0) # Tabloyu temizle
+        
         found_any = False
         for net_id in sorted(connections.keys()):
             comp_ids = connections[net_id]
             if comp_ids:
                 found_any = True
                 self.log(f"🔹 {net_id} Hattı:")
+                
+                # Loglama
                 for comp_id in comp_ids:
                     icon = "🔌"
-                    if "BOX" in comp_id:
-                        icon = "📦"
-                    elif "LABEL" in comp_id:
-                        icon = "🏷️"
-                    elif "BUSBAR" in comp_id:
-                        icon = "⚡"
+                    if "BOX" in comp_id: icon = "📦"
+                    elif "LABEL" in comp_id: icon = "🏷️"
+                    elif "BUSBAR" in comp_id: icon = "⚡"
                     self.log(f"   └─ {icon} {comp_id}")
+                
+                # Tabloya Ekleme (Basit Mantık: İlk eleman Source, diğerleri Target)
+                # Daha gelişmiş mantık için pin/klemens ayrımı yapılabilir.
+                # Şimdilik listedeki her bir ikili kombinasyonu veya zinciri ekleyelim.
+                # Örn: A, B, C -> A-B, B-C gibi veya A-B, A-C.
+                # Basitlik için: İlk elemanı kaynak al, diğerlerini hedef yap.
+                
+                # Listeyi temizle ve sırala
+                unique_comps = sorted(list(set(comp_ids)))
+                if len(unique_comps) >= 2:
+                    source_full = unique_comps[0]
+                    
+                    for target_full in unique_comps[1:]:
+                        self._add_table_row(source_full, target_full)
+
         if not found_any:
             self.log("❌ Hiçbir bağlantı bulunamadı.")
             self.log("İpucu: Klemensler veya kutular hatların üzerine gelmiyor olabilir.")
+
+    def _add_table_row(self, source_full, target_full):
+        """Tabloya yeni bir satır ekler."""
+        row = self.conn_table.rowCount()
+        self.conn_table.insertRow(row)
+        
+        # Parse Source (Örn: BOX-1:P24.i1 -> Tag: BOX-1, Pin: P24.i1)
+        s_tag, s_pin = self._parse_comp_id(source_full)
+        t_tag, t_pin = self._parse_comp_id(target_full)
+        
+        self.conn_table.setItem(row, 0, QTableWidgetItem(s_tag))
+        self.conn_table.setItem(row, 1, QTableWidgetItem(s_pin))
+        self.conn_table.setItem(row, 2, QTableWidgetItem(t_tag))
+        self.conn_table.setItem(row, 3, QTableWidgetItem(t_pin))
+        
+        # Diğer kolonlar şimdilik boş
+        self.conn_table.setItem(row, 4, QTableWidgetItem("")) # Color
+        self.conn_table.setItem(row, 5, QTableWidgetItem("")) # Cross-Section
+        self.conn_table.setItem(row, 6, QTableWidgetItem("")) # Cable Tag
+
+    def _parse_comp_id(self, comp_id):
+        """
+        'BOX-1:P24' -> ('BOX-1', 'P24')
+        'LABEL:P24.i1' -> ('', 'P24.i1')
+        'BUSBAR:L1' -> ('BUSBAR', 'L1')
+        """
+        if ":" in comp_id:
+            parts = comp_id.split(":", 1)
+            tag = parts[0]
+            pin = parts[1]
+            
+            # Özel durumlar
+            if tag == "LABEL": tag = "Wire"
+            if tag == "BUSBAR": tag = "Busbar"
+            
+            return tag, pin
+        else:
+            return comp_id, ""
 
     # ---------------------------------------------------------------------
     # Logging helpers
