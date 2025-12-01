@@ -250,6 +250,73 @@ class MainWindow(QMainWindow):
         all_components = manual_boxes + terminal_components
         connections = check_intersections(all_components, self.current_result)
 
+        # ---- BUSBAR DETECTION ----
+        busbar_count = 0
+        self.log("\n--- BUSBAR ANALİZİ ---")
+        
+        # Sayfa boyutlarını al (tahmini veya doc'dan)
+        page_width = 0
+        if self.doc:
+            page = self.doc.load_page(self.current_page - 1)
+            page_width = page.rect.width
+
+        busbar_threshold_ratio = 0.3 # Sayfanın %30'undan uzunsa busbar kabul et
+        
+        # Label Matcher'ı hazırla
+        matcher = None
+        try:
+            matcher = LabelMatcher(self.doc.load_page(self.current_page - 1))
+        except Exception as e:
+            self.log(f"Label Matcher başlatılamadı: {e}")
+
+        for i, group in enumerate(self.current_result.structural_groups):
+            # Grup bounding box'ını hesapla (eğer yoksa)
+            if not group.bounding_box:
+                group.calculate_bounding_box()
+            
+            bbox = group.bounding_box
+            width = bbox['max_x'] - bbox['min_x']
+            height = bbox['max_y'] - bbox['min_y']
+            
+            is_busbar = False
+            
+            # Sadece Yatay Busbar Kontrolü
+            if width > page_width * busbar_threshold_ratio and width > height * 2:
+                is_busbar = True
+            
+            if is_busbar:
+                busbar_count += 1
+                net_id = f"NET-{i+1:03d}"
+                self.log(f"⚡ Olası Yatay Busbar Bulundu: {net_id} (Uzunluk: {width:.1f})")
+                
+                # Busbar başlangıç noktasında (sol taraf) ve üstünde etiket ara
+                if matcher:
+                    # En sol noktayı bul (start_x)
+                    start_x = bbox['min_x']
+                    # Y koordinatı (yaklaşık olarak min_y veya ortalama y)
+                    start_y = bbox['min_y'] 
+                    
+                    # Arama kutusu: Başlangıçtan sağa doğru 150 birim, yukarı doğru 40 birim
+                    # (x0, y0, x1, y1)
+                    search_rect = (
+                        start_x - 10,       # Biraz sol payı
+                        start_y - 40,       # 40 birim yukarı
+                        start_x + 150,      # 150 birim sağa
+                        start_y + 5         # Biraz aşağı payı (çizgi kalınlığı vs.)
+                    )
+                    
+                    # Bu alan içindeki etiketleri bul
+                    labels = matcher.find_labels_in_rect(search_rect)
+                    
+                    if labels:
+                        # Bulunan etiketleri birleştir
+                        label_str = ", ".join(labels)
+                        self.log(f"   🏷️ Busbar Etiketi: {label_str}")
+                        connections.setdefault(net_id, []).extend([f"BUSBAR:{lbl}" for lbl in labels])
+
+        self.log(f"Toplam {busbar_count} adet potansiyel Busbar tespit edildi.")
+        self.log("----------------------")
+
         # ---- PinFinder integration ----
         if manual_boxes:
             if not self.text_engine:
@@ -265,22 +332,27 @@ class MainWindow(QMainWindow):
                 if found_pins:
                     connections.setdefault(net_id, []).extend([p["full_label"] for p in found_pins])
 
-        # ---- LabelMatcher fallback ----
-        try:
-            matcher = LabelMatcher(self.doc.load_page(self.current_page - 1))
-            for i, group in enumerate(self.current_result.structural_groups):
-                net_id = f"NET-{i+1:03d}"
-                endpoints = []
-                lines = getattr(group, "lines", [])
-                for line in lines:
-                    endpoints.append(line.get("start"))
-                    endpoints.append(line.get("end"))
-                if endpoints:
-                    labels = matcher.find_labels_for_net(endpoints, all_components)
-                    if labels:
-                        connections.setdefault(net_id, []).extend([f"LABEL:{lbl}" for lbl in labels])
-        except Exception as e:
-            self.log(f"Label Matcher hatası: {e}")
+        # ---- LabelMatcher fallback (Diğer hatlar için) ----
+        if matcher:
+            try:
+                for i, group in enumerate(self.current_result.structural_groups):
+                    net_id = f"NET-{i+1:03d}"
+                    
+                    endpoints = []
+                    for elem in group.elements:
+                        endpoints.append((elem.start_point.x, elem.start_point.y))
+                        endpoints.append((elem.end_point.x, elem.end_point.y))
+                    if endpoints:
+                        labels = matcher.find_labels_for_net(endpoints, all_components)
+                        if labels:
+                            current_conns = connections.get(net_id, [])
+                            for lbl in labels:
+                                lbl_str = f"LABEL:{lbl}"
+                                busbar_lbl_str = f"BUSBAR:{lbl}"
+                                if lbl_str not in current_conns and busbar_lbl_str not in current_conns:
+                                     connections.setdefault(net_id, []).append(lbl_str)
+            except Exception as e:
+                self.log(f"Label Matcher hatası: {e}")
 
         # Reporting
         self.log("\n====== BAĞLANTI RAPORU ======")
@@ -296,6 +368,8 @@ class MainWindow(QMainWindow):
                         icon = "📦"
                     elif "LABEL" in comp_id:
                         icon = "🏷️"
+                    elif "BUSBAR" in comp_id:
+                        icon = "⚡"
                     self.log(f"   └─ {icon} {comp_id}")
         if not found_any:
             self.log("❌ Hiçbir bağlantı bulunamadı.")
