@@ -1,8 +1,10 @@
+# MainWindow implementation for P8 Analyzer
+
 import os
 import pymupdf
 from PyQt5.QtWidgets import (
     QMainWindow, QFileDialog, QToolBar, QAction,
-    QDockWidget, QTextEdit, QLabel, QMessageBox,
+    QDockWidget, QTextEdit, QLabel, QMessageBox, QWidget, QVBoxLayout,
     QTableWidget, QTableWidgetItem, QHeaderView
 )
 from PyQt5.QtCore import Qt
@@ -210,17 +212,28 @@ class MainWindow(QMainWindow):
             self.text_engine = HybridTextEngine(["en"])
             if self.doc: self.text_engine.load_page(self.doc.load_page(self.current_page - 1))
 
-        if matcher and manual_boxes:
-            ComponentNamer(matcher).name_boxes(manual_boxes, self.log)
+        if self.text_engine and manual_boxes:
+            ComponentNamer(self.text_engine).name_boxes(manual_boxes, self.log)
 
         # 1. Klemens Dönüşümü
         terminal_components = []
+        used_term_ids = {} # { "label": count }
+
         if hasattr(self.current_result, "terminals") and self.current_result.terminals:
             for term in self.current_result.terminals:
                 cx, cy = term["center"]
-                term_label = term.get("full_label") or term.get("label") or f"TERM"
+                base_label = term.get("full_label") or term.get("label") or f"TERM"
+                
+                # Unique ID generation
+                if base_label in used_term_ids:
+                    used_term_ids[base_label] += 1
+                    term_id = f"{base_label} ({used_term_ids[base_label]})"
+                else:
+                    used_term_ids[base_label] = 1
+                    term_id = base_label
+
                 comp = CircuitComponent(
-                    id=term_label, label="Terminal",
+                    id=term_id, label="Terminal",
                     bbox={"min_x": cx-2, "min_y": cy-2, "max_x": cx+2, "max_y": cy+2}
                 )
                 terminal_components.append(comp)
@@ -288,26 +301,67 @@ class MainWindow(QMainWindow):
             raw_ids = connections[net_id]
             unique_ids = list(dict.fromkeys(raw_ids)) # Tekilleştir
             
-            # Eğer listede sadece "[BUSBAR: P24]" gibi tek eleman varsa gösterme (bağlantı yok demektir)
-            if len(unique_ids) < 2 and not (len(unique_ids)==1 and "BUSBAR" in unique_ids[0]):
-                 # Ama Busbar ise ve tek başına duruyorsa da görmek isteyebiliriz.
-                 # Yine de en az 2 nokta arası bağlantı arıyoruz.
-                 pass
+            # 1. Busbar ve Bileşenleri Ayır
+            busbar_name = None
+            components = []
+            
+            for uid in unique_ids:
+                if uid.startswith("[BUSBAR:"):
+                    # [BUSBAR: P24] -> P24
+                    busbar_name = uid.split(":")[1].strip(" ]")
+                else:
+                    components.append(uid)
+            
+            # 2. Pin Kontrolü (Pin'i olmayanları ayıkla ve logla)
+            valid_components = []
+            for comp_id in components:
+                if ":" in comp_id:
+                    valid_components.append(comp_id)
+                else:
+                    # Pin yoksa loga düş, tabloya ekleme
+                    self.log(f"⚠️ DİKKAT: '{comp_id}' cihazında/klemensinde pin tespit edilemedi (Hat: {net_id}).")
 
-            if unique_ids:
-                icon = "⚡" if not net_id.startswith("NET-") else "🔹"
-                self.log(f"{icon} {net_id} Hattı: {', '.join(unique_ids)}")
+            if not valid_components:
+                continue
+
+            # 3. Kaynak - Hedef Belirleme ve Tabloya Ekleme
+            if busbar_name:
+                # Senaryo A: Busbar Kaynak
+                # Busbar -> Tüm Valid Componentler
+                for target in valid_components:
+                    self._add_table_row(busbar_name, target)
+                    self.log(f"⚡ {busbar_name} ==> {target}")
+            else:
+                # Senaryo B: Normal Bağlantı (Net)
+                # Klemens var mı? (-X ile başlayanlar)
+                terminals = [c for c in valid_components if c.startswith("-X")]
+                devices = [c for c in valid_components if not c.startswith("-X")]
                 
-                # Tabloya Ekle (Source -> Target)
-                # Source olarak Hattın adını (net_id) kullanabiliriz veya ilk bileşeni
-                if len(unique_ids) >= 1:
-                    src = net_id # Hat adı kaynak olsun (örn: P24)
-                    for target in unique_ids:
-                        if "BUSBAR" in target: continue # Kendini referans verme
-                        self._add_table_row(src, target)
+                # Eğer hiç geçerli bileşen yoksa atla
+                if not terminals and not devices:
+                    continue
+                    
+                # Kaynak Belirle
+                source = None
+                targets = []
+                
+                if terminals:
+                    # Klemens varsa, ilk klemens kaynak olur
+                    source = terminals[0]
+                    # Geriye kalanlar hedef (Diğer klemensler + cihazlar)
+                    targets = terminals[1:] + devices
+                else:
+                    # Sadece cihazlar varsa, ilki kaynak
+                    source = devices[0]
+                    targets = devices[1:]
+                
+                # Tabloya Ekle
+                for target in targets:
+                    self._add_table_row(source, target)
+                    self.log(f"🔹 {source} --> {target}")
 
-        if not connections:
-            self.log("❌ Bağlantı bulunamadı.")
+        if self.conn_table.rowCount() == 0:
+            self.log("❌ Tabloya eklenecek geçerli bağlantı bulunamadı.")
 
     def _add_table_row(self, source, target):
         row = self.conn_table.rowCount()

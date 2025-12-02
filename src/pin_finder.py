@@ -34,29 +34,51 @@ class PinFinder:
             
             if found_box:
                 # TextEngine ile akıllı arama yap (PDF + OCR)
-                label = self._find_label_near_point(point, text_engine)
+                text_element = self._find_label_element_near_point(point, text_engine)
                 
-                if label and self._is_valid_pin_label(label):
-                    # Duplicate (aynı pin) kontrolü
-                    is_duplicate = False
-                    for existing in pins:
-                        if existing['pin_label'] == label and existing['box_id'] == found_box.id:
-                            is_duplicate = True
-                            break
+                if text_element and self._is_valid_pin_label(text_element.text):
+                    label = text_element.text
+                    text_center = text_element.center
                     
-                    if not is_duplicate:
-                        full_label = f"{found_box.id}:{label}"
+                    # Duplicate Check Logic based on TEXT LOCATION
+                    is_same_text_object = False
+                    duplicate_count = 0
+                    
+                    for existing_pin in pins:
+                        if existing_pin['pin_label'] == label and existing_pin['box_id'] == found_box.id:
+                            duplicate_count += 1
+                            
+                            # Check distance between TEXT CENTERS
+                            # If the text centers are very close, it's the same text object (ghost detection)
+                            ex, ey = existing_pin['text_center']
+                            import math
+                            text_dist = math.sqrt((ex - text_center[0])**2 + (ey - text_center[1])**2)
+                            
+                            if text_dist < 2.0: # Same text object found again
+                                is_same_text_object = True
+                                break
+                    
+                    if not is_same_text_object:
+                        final_label = label
+                        if duplicate_count > 0:
+                            final_label = f"{label} ({duplicate_count + 1})"
+                            
+                        full_label = f"{found_box.id}:{final_label}"
+                        
                         pins.append({
                             'box_id': found_box.id,
                             'pin_label': label,
                             'full_label': full_label,
-                            'location': (point.x, point.y)
+                            'location': (point.x, point.y),
+                            'text_center': text_center # Store text location for deduplication
                         })
-                        self._log_debug(f"✅ PIN BULUNDU: {full_label}")
+                        self._log_debug(f"✅ PIN BULUNDU: {full_label} (Raw: {label})")
+                    else:
+                        self._log_debug(f"⚠️ DUPLICATE TEXT SKIPPED: {label}")
         return pins
 
-    def _find_label_near_point(self, point, text_engine) -> Optional[str]:
-        """TextEngine kullanarak nokta çevresinde etiket arar."""
+    def _find_label_element_near_point(self, point, text_engine) -> Optional[Any]:
+        """TextEngine kullanarak nokta çevresinde etiket arar ve TextElement döner."""
         profile = SearchProfile(
             search_radius=self.search_radius,
             direction=SearchDirection.ANY, 
@@ -65,8 +87,7 @@ class PinFinder:
         )
         
         # TextEngine'e işi devrediyoruz
-        result = text_engine.find_text(point, profile)
-        return result.text if result else None
+        return text_engine.find_text(point, profile)
 
     def _is_valid_pin_label(self, label: str) -> bool:
         if not label: return False

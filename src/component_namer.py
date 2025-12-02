@@ -1,50 +1,41 @@
 import logging
+from src.device_tagger import DeviceTagger
 
 logger = logging.getLogger(__name__)
 
 class ComponentNamer:
     """
-    Handles the automatic naming of manual boxes based on the text found inside them.
+    Handles the automatic naming of manual boxes using DeviceTagger (Top-Left search).
     """
-    def __init__(self, matcher):
-        self.matcher = matcher
+    def __init__(self, text_engine):
+        self.text_engine = text_engine
+        self.tagger = DeviceTagger(text_engine)
 
     def name_boxes(self, boxes, logger_func=None):
         """
-        Iterates through boxes and updates their IDs if a suitable label is found inside.
+        Iterates through boxes and updates their IDs using DeviceTagger.
         """
-        if not self.matcher or not boxes:
+        if not self.text_engine or not boxes:
             return
 
         if logger_func:
-            logger_func("📦 Kutular isimlendiriliyor...")
+            logger_func("📦 Kutular isimlendiriliyor (Sol-Üst Köşe Taraması)...")
 
         for box in boxes:
-            # Find text inside the box
-            box_texts = self.matcher.find_text_objects_in_rect((
+            # Use DeviceTagger to find the tag at the top-left corner
+            found_tag = self.tagger.find_tag((
                 box.bbox['min_x'], box.bbox['min_y'],
                 box.bbox['max_x'], box.bbox['max_y']
             ))
             
-            candidate_name = None
-            for obj in box_texts:
-                txt = obj['text'].strip()
-                
-                # Validation Logic:
-                # 1. Must start with '-'
-                # 2. Must be > 1 char (not just '-')
-                # 3. Must contain at least one alphanumeric char (reject '---')
-                # 4. Length limit
-                if (txt.startswith("-") and 
-                    len(txt) > 1 and 
-                    len(txt) < 15 and
-                    any(c.isalnum() for c in txt)):
+            if found_tag:
+                # Validate the tag (DeviceTagger already does regex, but we can double check)
+                # Reject '---' or invalid formats if DeviceTagger lets them through
+                if (found_tag.startswith("-") and 
+                    len(found_tag) > 1 and 
+                    any(c.isalnum() for c in found_tag)):
                     
-                    candidate_name = txt
-                    break # Take the first valid one
-            
-            if candidate_name:
-                old_id = box.id
-                box.id = candidate_name
-                if logger_func:
-                    logger_func(f"   🔄 {old_id} -> {candidate_name} olarak güncellendi.")
+                    old_id = box.id
+                    box.id = found_tag
+                    if logger_func:
+                        logger_func(f"   🔄 {old_id} -> {found_tag} olarak güncellendi.")
