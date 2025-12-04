@@ -14,11 +14,15 @@ class InteractiveGraphicsView(QGraphicsView):
         self.mode = "NAVIGATE"
         self.temp_rect = None
         self.start_pos = None
-        self.drawn_boxes = [] # Çizilen kutular burada saklanır
+        self.drawn_boxes = [] 
+        self.tagger_callback = None
+
+    def set_tagger_callback(self, callback):
+        self.tagger_callback = callback
 
     def set_background_image(self, page):
         self.scene.clear()
-        self.drawn_boxes = [] # Sayfa değişince kutuları temizle
+        self.drawn_boxes = [] 
         
         mat = pymupdf.Matrix(2, 2)
         pix = page.get_pixmap(matrix=mat)
@@ -31,12 +35,10 @@ class InteractiveGraphicsView(QGraphicsView):
         self.scene.setSceneRect(0, 0, page.rect.width, page.rect.height)
 
     def draw_analysis_result(self, result):
-        # 1. Hatları Çiz
         for i, group in enumerate(result.structural_groups):
             display_id = f"NET-{i+1:03d}"
             self._draw_group(group, display_id)
             
-        # 2. Klemensleri Çiz
         if hasattr(result, 'terminals') and result.terminals:
             for term in result.terminals:
                 self._draw_terminal(term)
@@ -55,14 +57,11 @@ class InteractiveGraphicsView(QGraphicsView):
     def _draw_terminal(self, terminal):
         cx, cy = terminal['center']
         radius = terminal['radius']
-        
-        # Daire çiz
         ellipse = QGraphicsEllipseItem(cx - radius, cy - radius, radius * 2, radius * 2)
         ellipse.setPen(QPen(Qt.blue, 1.0))
         ellipse.setBrush(QBrush(QColor(0, 0, 255, 50)))
         self.scene.addItem(ellipse)
         
-        # Etiket yaz
         label = terminal.get('full_label') or terminal.get('label')
         if label and label != '?':
             text = QGraphicsSimpleTextItem(str(label))
@@ -103,29 +102,26 @@ class InteractiveGraphicsView(QGraphicsView):
             self.scene.removeItem(self.temp_rect)
             self.temp_rect = None
             
-            # Kutu ID'si
             box_id = f"BOX-{len(self.drawn_boxes)+1}"
             
-            # Kalıcı Kutu Çiz
+            if self.tagger_callback:
+                bbox = (rect.left(), rect.top(), rect.right(), rect.bottom())
+                found_tag = self.tagger_callback(bbox)
+                if found_tag: box_id = found_tag
+            
             final_item = QGraphicsRectItem(rect)
             final_item.setPen(QPen(Qt.red, 2))
             final_item.setBrush(QBrush(QColor(255, 0, 0, 40)))
             self.scene.addItem(final_item)
             
-            # ID Yazısı Ekle
             text = self.scene.addSimpleText(box_id)
             text.setPos(rect.left(), rect.top() - 15)
             text.setBrush(QColor("red"))
             text.setFont(QFont("Arial", 8, QFont.Bold))
             
-            # LİSTEYE KAYDET (Logic'in kullanacağı yer burası)
             component = CircuitComponent(
-                id=box_id,
-                label="Manual",
-                bbox={
-                    "min_x": rect.left(), "min_y": rect.top(),
-                    "max_x": rect.right(), "max_y": rect.bottom()
-                }
+                id=box_id, label="Manual",
+                bbox={"min_x": rect.left(), "min_y": rect.top(), "max_x": rect.right(), "max_y": rect.bottom()}
             )
             self.drawn_boxes.append(component)
         else:
@@ -133,6 +129,38 @@ class InteractiveGraphicsView(QGraphicsView):
 
     def get_drawn_components(self):
         return self.drawn_boxes
+
+    def draw_debug_rect(self, rect, color=Qt.green, label=None):
+        x0, y0, x1, y1 = rect
+        w = x1 - x0
+        h = y1 - y0
+        rect_item = QGraphicsRectItem(x0, y0, w, h)
+        rect_item.setPen(QPen(color, 1, Qt.DashLine))
+        self.scene.addItem(rect_item)
+        if label:
+            text_item = QGraphicsSimpleTextItem(label)
+            text_item.setPos(x0, y0 - 10)
+            text_item.setFont(QFont("Arial", 6))
+            text_item.setBrush(QBrush(color))
+            self.scene.addItem(text_item)
+
+    # --- YENİ EKLENEN METOD ---
+    def draw_debug_point(self, point, color=Qt.red, radius=5.0):
+        """
+        Verilen (x, y) noktasına belirgin bir daire çizer.
+        """
+        x, y = point
+        # Daireyi oluştur (merkezi x,y olacak şekilde)
+        ellipse = QGraphicsEllipseItem(x - radius, y - radius, radius * 2, radius * 2)
+        
+        # Kenar çizgisi (Siyah olsun ki belli olsun)
+        ellipse.setPen(QPen(Qt.black, 1))
+        # İç dolgusu (İstenen renk)
+        ellipse.setBrush(QBrush(color))
+        # Her zaman üstte görünsün diye z-value verilebilir
+        ellipse.setZValue(100) 
+        
+        self.scene.addItem(ellipse)
 
     def wheelEvent(self, event):
         if event.modifiers() & Qt.ControlModifier:

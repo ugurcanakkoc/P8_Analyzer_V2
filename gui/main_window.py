@@ -1,807 +1,385 @@
+# MainWindow implementation for P8 Analyzer
+
 import os
 import pymupdf
-from PyQt5.QtWidgets import (QMainWindow, QFileDialog, QToolBar, QAction, 
-                             QDockWidget, QTextEdit, QLabel, QMessageBox, QWidget, QVBoxLayout)
+from PyQt5.QtWidgets import (
+    QMainWindow, QFileDialog, QToolBar, QAction,
+    QDockWidget, QTextEdit, QLabel, QMessageBox, QWidget, QVBoxLayout,
+    QTableWidget, QTableWidgetItem, QHeaderView
+)
 from PyQt5.QtCore import Qt
 
-# Kendi modüllerimiz
+# Local modules
 from .viewer import InteractiveGraphicsView
 from .worker import AnalysisWorker
-from .circuit_logic import check_intersections
 from .ocr_worker import OCRComparisonWorker
+from .circuit_logic import check_intersections, CircuitComponent
+from src.label_matcher import LabelMatcher
+from src.pin_finder import PinFinder
+from src.text_engine import HybridTextEngine
+from src.busbar_finder import BusbarFinder
+from src.component_namer import ComponentNamer
 
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("UVP - Professional Vector Analyzer")
         self.resize(1200, 800)
-        
-        # Durum Değişkenleri
+
+        # State variables
         self.doc = None
         self.current_page = 1
         self.total_pages = 0
-        
+        self.app_settings = {"pin_search_radius": 75.0}
+        self.text_engine = None 
+        self.current_result = None
+
         self.init_ui()
-        
-        # --- OTOMATİK BAŞLATMA ---
-        # Program açılınca otomatik olarak data/ornek.pdf'i yüklemeyi dene
         self.load_default_file()
 
     def init_ui(self):
-        # 1. Viewer (Canvas)
         self.viewer = InteractiveGraphicsView()
         self.setCentralWidget(self.viewer)
-        
-        # 2. Toolbar
+
         toolbar = QToolBar("Araçlar")
         self.addToolBar(toolbar)
-        
-        # Dosya Aç
-        act_open = QAction("📂 PDF Aç", self)
-        act_open.triggered.connect(self.browse_pdf) # İsmini browse_pdf yaptık
-        toolbar.addAction(act_open)
-        
-        toolbar.addSeparator()
-        
-        # Navigasyon
-        self.act_prev = QAction("◀ Önceki", self)
-        self.act_prev.triggered.connect(self.prev_page)
-        self.act_prev.setEnabled(False)
-        toolbar.addAction(self.act_prev)
-        
-        self.lbl_page = QLabel(" Sayfa: -/- ")
-        toolbar.addWidget(self.lbl_page)
-        
-        self.act_next = QAction("Sonraki ▶", self)
-        self.act_next.triggered.connect(self.next_page)
-        self.act_next.setEnabled(False)
-        toolbar.addAction(self.act_next)
-        
-        toolbar.addSeparator()
-        
-        # Analiz Butonu
-        self.act_analyze = QAction("⚡ Analiz Et", self)
-        self.act_analyze.triggered.connect(self.start_analysis)
-        self.act_analyze.setEnabled(False)
-        toolbar.addAction(self.act_analyze)
-        
-        toolbar.addSeparator()
-        # OCR Butonu
-        self.act_ocr_test = QAction("👁️ OCR vs PDF", self)
-        self.act_ocr_test.triggered.connect(self.run_ocr_test)
-        self.act_ocr_test.setEnabled(False) # Analizden sonra açılacak
-        toolbar.addAction(self.act_ocr_test)
-        # Mod Butonları
-        self.act_nav = QAction("✋ Gezin", self)
-        self.act_nav.setCheckable(True); self.act_nav.setChecked(True)
-        self.act_nav.triggered.connect(lambda: self.set_mode("NAVIGATE"))
-        toolbar.addAction(self.act_nav)
-        
-        self.act_draw = QAction("🟥 Kutu Çiz", self)
-        self.act_draw.setCheckable(True)
-        self.act_draw.triggered.connect(lambda: self.set_mode("DRAW"))
-        toolbar.addAction(self.act_draw)
-        
-        # Bağlantı Kontrol Butonu
-        self.act_check = QAction("🔗 Bağlantı Kontrol", self)
-        self.act_check.triggered.connect(self.run_connection_check)
-        self.act_check.setEnabled(False) 
-        toolbar.addAction(self.act_check)
-        
-        # 3. Log Paneli
-        dock = QDockWidget("Loglar", self)
-        dock.setAllowedAreas(Qt.RightDockWidgetArea)
-        self.log_text = QTextEdit()
-        self.log_text.setReadOnly(True)
-        dock.setWidget(self.log_text)
-        self.addDockWidget(Qt.RightDockWidgetArea, dock)
-        
-        # 4. Status Bar
-        self.status_bar = self.statusBar()
 
-    def load_default_file(self):
-        """Otomatik olarak data/ornek.pdf dosyasını ve 18. sayfayı açar."""
-        # Proje kök dizinini bul
-        base_dir = os.getcwd()
-        default_path = os.path.join(base_dir, "data", "ornek.pdf")
-        
-        if os.path.exists(default_path):
-            self.log(f"Otomatik yükleme: {default_path}")
-            if self.load_pdf_file(default_path):
-                # Dosya başarıyla açıldıysa sayfa 18'e git
-                target_page = 25
-                if target_page <= self.total_pages:
-                    self.current_page = target_page
-                    self.load_current_page()
-                else:
-                    self.log(f"Uyarı: PDF {self.total_pages} sayfa, 18. sayfa açılamadı.")
-        else:
-            self.log("Bilgi: 'data/ornek.pdf' bulunamadı, boş açılıyor.")
-
-    def browse_pdf(self):
-        """Kullanıcıya dosya seçtirme diyaloğu."""
-        path, _ = QFileDialog.getOpenFileName(self, "PDF Seç", "", "PDF (*.pdf)")
-        if path:
-            if self.load_pdf_file(path):
-                self.current_page = 1
-                self.load_current_page()
-
-    def load_pdf_file(self, path):
-        """Verilen path'teki PDF'i açar (Mantıksal yükleme)."""
-        try:
-            self.doc = pymupdf.open(path)
-            self.total_pages = len(self.doc)
-            self.log(f"PDF Yüklendi: {os.path.basename(path)} ({self.total_pages} sayfa)")
-            return True
-        except Exception as e:
-            QMessageBox.critical(self, "Hata", f"PDF açılamadı:\n{str(e)}")
-            return False
-
-    def load_current_page(self):
-        """Mevcut self.current_page'i ekrana ve viewer'a yükler."""
-        if not self.doc: return
-        
-        try:
-            # 1. Viewer'a resmi yükle (Arkaplanı temizler)
-            # PyMuPDF sayfa indexi 0'dan başlar, biz 1'den sayıyoruz.
-            page_index = self.current_page - 1
-            page = self.doc.load_page(page_index)
-            self.viewer.set_background_image(page)
-            
-            # 2. UI Durumlarını Güncelle
-            self.status_bar.showMessage(f"Sayfa {self.current_page} yüklendi.")
-            self.lbl_page.setText(f" Sayfa: {self.current_page} / {self.total_pages} ")
-            
-            # Navigasyon butonlarını kontrol et
-            self.act_prev.setEnabled(self.current_page > 1)
-            self.act_next.setEnabled(self.current_page < self.total_pages)
-            
-            # Analiz butonunu aktif et
-            self.act_analyze.setEnabled(True)
-            
-            # Eski analiz sonuçlarını ve bağlantı butonunu sıfırla
-            self.act_check.setEnabled(False)
-            if hasattr(self, 'current_result'): 
-                del self.current_result
-            
-            # Kutu çizme modundaysa NAVIGATE'e geri alabiliriz (isteğe bağlı)
-            # self.set_mode("NAVIGATE") 
-
-        except Exception as e:
-            self.log(f"Sayfa yükleme hatası: {e}")
-
-    def prev_page(self):
-        """Önceki sayfaya geçer."""
-        if self.current_page > 1:
-            self.current_page -= 1
-            self.load_current_page()
-
-    def next_page(self):
-        """Sonraki sayfaya geçer."""
-        if self.current_page < self.total_pages:
-            self.current_page += 1
-            self.load_current_page()
-
-    def set_mode(self, mode):
-        """Modlar arası geçiş yapar."""
-        if mode == "NAVIGATE":
-            self.act_nav.setChecked(True); self.act_draw.setChecked(False)
-            self.viewer.set_mode("NAVIGATE")
-import os
-import pymupdf
-from PyQt5.QtWidgets import (QMainWindow, QFileDialog, QToolBar, QAction, 
-                             QDockWidget, QTextEdit, QLabel, QMessageBox, QWidget, QVBoxLayout)
-from PyQt5.QtCore import Qt
-
-# Kendi modüllerimiz
-from .viewer import InteractiveGraphicsView
-from .worker import AnalysisWorker
-from .circuit_logic import check_intersections
-from .ocr_worker import OCRComparisonWorker
-
-class MainWindow(QMainWindow):
-    def __init__(self):
-        super().__init__()
-        self.setWindowTitle("UVP - Professional Vector Analyzer")
-        self.resize(1200, 800)
-        
-        # Durum Değişkenleri
-        self.doc = None
-        self.current_page = 1
-        self.total_pages = 0
-        
-        self.init_ui()
-        
-        # --- OTOMATİK BAŞLATMA ---
-        # Program açılınca otomatik olarak data/ornek.pdf'i yüklemeyi dene
-        self.load_default_file()
-
-    def init_ui(self):
-        # 1. Viewer (Canvas)
-        self.viewer = InteractiveGraphicsView()
-        self.setCentralWidget(self.viewer)
-        
-        # 2. Toolbar
-        toolbar = QToolBar("Araçlar")
-        self.addToolBar(toolbar)
-        
-        # Dosya Aç
-        act_open = QAction("📂 PDF Aç", self)
-        act_open.triggered.connect(self.browse_pdf) # İsmini browse_pdf yaptık
-        toolbar.addAction(act_open)
-        
-        toolbar.addSeparator()
-        
-        # Navigasyon
-        self.act_prev = QAction("◀ Önceki", self)
-        self.act_prev.triggered.connect(self.prev_page)
-        self.act_prev.setEnabled(False)
-        toolbar.addAction(self.act_prev)
-        
-        self.lbl_page = QLabel(" Sayfa: -/- ")
-        toolbar.addWidget(self.lbl_page)
-        
-        self.act_next = QAction("Sonraki ▶", self)
-        self.act_next.triggered.connect(self.next_page)
-        self.act_next.setEnabled(False)
-        toolbar.addAction(self.act_next)
-        
-        toolbar.addSeparator()
-        
-        # Analiz Butonu
-        self.act_analyze = QAction("⚡ Analiz Et", self)
-        self.act_analyze.triggered.connect(self.start_analysis)
-        self.act_analyze.setEnabled(False)
-        toolbar.addAction(self.act_analyze)
-        
-        toolbar.addSeparator()
-        # OCR Butonu
-        self.act_ocr_test = QAction("👁️ OCR vs PDF", self)
-        self.act_ocr_test.triggered.connect(self.run_ocr_test)
-        self.act_ocr_test.setEnabled(False) # Analizden sonra açılacak
-        toolbar.addAction(self.act_ocr_test)
-        # Mod Butonları
-        self.act_nav = QAction("✋ Gezin", self)
-        self.act_nav.setCheckable(True); self.act_nav.setChecked(True)
-        self.act_nav.triggered.connect(lambda: self.set_mode("NAVIGATE"))
-        toolbar.addAction(self.act_nav)
-        
-        self.act_draw = QAction("🟥 Kutu Çiz", self)
-        self.act_draw.setCheckable(True)
-        self.act_draw.triggered.connect(lambda: self.set_mode("DRAW"))
-        toolbar.addAction(self.act_draw)
-        
-        # Bağlantı Kontrol Butonu
-        self.act_check = QAction("🔗 Bağlantı Kontrol", self)
-        self.act_check.triggered.connect(self.run_connection_check)
-        self.act_check.setEnabled(False) 
-        toolbar.addAction(self.act_check)
-        
-        # 3. Log Paneli
-        dock = QDockWidget("Loglar", self)
-        dock.setAllowedAreas(Qt.RightDockWidgetArea)
-        self.log_text = QTextEdit()
-        self.log_text.setReadOnly(True)
-        dock.setWidget(self.log_text)
-        self.addDockWidget(Qt.RightDockWidgetArea, dock)
-        
-        # 4. Status Bar
-        self.status_bar = self.statusBar()
-
-    def load_default_file(self):
-        """Otomatik olarak data/ornek.pdf dosyasını ve 18. sayfayı açar."""
-        # Proje kök dizinini bul
-        base_dir = os.getcwd()
-        default_path = os.path.join(base_dir, "data", "ornek.pdf")
-        
-        if os.path.exists(default_path):
-            self.log(f"Otomatik yükleme: {default_path}")
-            if self.load_pdf_file(default_path):
-                # Dosya başarıyla açıldıysa sayfa 18'e git
-                target_page = 18
-                if target_page <= self.total_pages:
-                    self.current_page = target_page
-                    self.load_current_page()
-                else:
-                    self.log(f"Uyarı: PDF {self.total_pages} sayfa, 18. sayfa açılamadı.")
-        else:
-            self.log("Bilgi: 'data/ornek.pdf' bulunamadı, boş açılıyor.")
-
-    def browse_pdf(self):
-        """Kullanıcıya dosya seçtirme diyaloğu."""
-        path, _ = QFileDialog.getOpenFileName(self, "PDF Seç", "", "PDF (*.pdf)")
-        if path:
-            if self.load_pdf_file(path):
-                self.current_page = 1
-                self.load_current_page()
-
-    def load_pdf_file(self, path):
-        """Verilen path'teki PDF'i açar (Mantıksal yükleme)."""
-        try:
-            self.doc = pymupdf.open(path)
-            self.total_pages = len(self.doc)
-            self.log(f"PDF Yüklendi: {os.path.basename(path)} ({self.total_pages} sayfa)")
-            return True
-        except Exception as e:
-            QMessageBox.critical(self, "Hata", f"PDF açılamadı:\n{str(e)}")
-            return False
-
-    def load_current_page(self):
-        """Mevcut self.current_page'i ekrana ve viewer'a yükler."""
-        if not self.doc: return
-        
-        try:
-            # 1. Viewer'a resmi yükle (Arkaplanı temizler)
-            # PyMuPDF sayfa indexi 0'dan başlar, biz 1'den sayıyoruz.
-            page_index = self.current_page - 1
-            page = self.doc.load_page(page_index)
-            self.viewer.set_background_image(page)
-            
-            # 2. UI Durumlarını Güncelle
-            self.status_bar.showMessage(f"Sayfa {self.current_page} yüklendi.")
-            self.lbl_page.setText(f" Sayfa: {self.current_page} / {self.total_pages} ")
-            
-            # Navigasyon butonlarını kontrol et
-            self.act_prev.setEnabled(self.current_page > 1)
-            self.act_next.setEnabled(self.current_page < self.total_pages)
-            
-            # Analiz butonunu aktif et
-            self.act_analyze.setEnabled(True)
-            
-            # Eski analiz sonuçlarını ve bağlantı butonunu sıfırla
-            self.act_check.setEnabled(False)
-            if hasattr(self, 'current_result'): 
-                del self.current_result
-            
-            # Kutu çizme modundaysa NAVIGATE'e geri alabiliriz (isteğe bağlı)
-            # self.set_mode("NAVIGATE") 
-
-        except Exception as e:
-            self.log(f"Sayfa yükleme hatası: {e}")
-
-    def prev_page(self):
-        """Önceki sayfaya geçer."""
-        if self.current_page > 1:
-            self.current_page -= 1
-            self.load_current_page()
-
-    def next_page(self):
-        """Sonraki sayfaya geçer."""
-        if self.current_page < self.total_pages:
-            self.current_page += 1
-            self.load_current_page()
-
-    def set_mode(self, mode):
-        """Modlar arası geçiş yapar."""
-        if mode == "NAVIGATE":
-            self.act_nav.setChecked(True); self.act_draw.setChecked(False)
-            self.viewer.set_mode("NAVIGATE")
-
-import os
-import pymupdf
-from PyQt5.QtWidgets import (QMainWindow, QFileDialog, QToolBar, QAction, 
-                             QDockWidget, QTextEdit, QLabel, QMessageBox, QWidget, QVBoxLayout,
-                             QDialog, QFormLayout, QSpinBox, QDoubleSpinBox, QDialogButtonBox)
-from PyQt5.QtCore import Qt, pyqtSignal
-
-# Kendi modüllerimiz
-from .viewer import InteractiveGraphicsView
-from .worker import AnalysisWorker
-from .circuit_logic import check_intersections
-from .ocr_worker import OCRComparisonWorker
-
-class SettingsDialog(QDialog):
-    def __init__(self, current_settings, parent=None):
-        super().__init__(parent)
-        self.setWindowTitle("Ayarlar")
-        self.settings = current_settings
-        self.init_ui()
-
-    def init_ui(self):
-        layout = QFormLayout()
-        
-        # Pin Arama Yarıçapı
-        self.spin_radius = QDoubleSpinBox()
-        self.spin_radius.setRange(10.0, 200.0)
-        self.spin_radius.setValue(self.settings.get('pin_search_radius', 75.0))
-        layout.addRow("Pin Arama Yarıçapı (px):", self.spin_radius)
-        
-        # Butonlar
-        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        buttons.accepted.connect(self.accept)
-        buttons.rejected.connect(self.reject)
-        layout.addRow(buttons)
-        
-        self.setLayout(layout)
-
-    def get_settings(self):
-        return {
-            'pin_search_radius': self.spin_radius.value()
-        }
-
-class DebugLogDialog(QDialog):
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setWindowTitle("Pin Finder Debug Log")
-        self.resize(600, 400)
-        layout = QVBoxLayout()
-        self.text_edit = QTextEdit()
-        self.text_edit.setReadOnly(True)
-        layout.addWidget(self.text_edit)
-        self.setLayout(layout)
-
-    def append_log(self, msg):
-        self.text_edit.append(msg)
-
-class MainWindow(QMainWindow):
-    def __init__(self):
-        super().__init__()
-        self.setWindowTitle("UVP - Professional Vector Analyzer")
-        self.resize(1200, 800)
-        
-        # Durum Değişkenleri
-        self.doc = None
-        self.current_page = 1
-        self.total_pages = 0
-        
-        # Varsayılan Ayarlar
-        self.app_settings = {
-            'pin_search_radius': 75.0
-        }
-        
-        self.debug_dialog = None
-        
-        self.init_ui()
-        
-        # --- OTOMATİK BAŞLATMA ---
-        self.load_default_file()
-
-    def init_ui(self):
-        # 1. Viewer (Canvas)
-        self.viewer = InteractiveGraphicsView()
-        self.setCentralWidget(self.viewer)
-        
-        # 2. Toolbar
-        toolbar = QToolBar("Araçlar")
-        self.addToolBar(toolbar)
-        
-        # Dosya Aç
         act_open = QAction("📂 PDF Aç", self)
         act_open.triggered.connect(self.browse_pdf)
         toolbar.addAction(act_open)
-        
         toolbar.addSeparator()
-        
-        # Ayarlar
-        act_settings = QAction("⚙️ Ayarlar", self)
-        act_settings.triggered.connect(self.open_settings)
-        toolbar.addAction(act_settings)
-        
-        # Debug Log
-        act_debug = QAction("🐞 Debug Log", self)
-        act_debug.triggered.connect(self.open_debug_log)
-        toolbar.addAction(act_debug)
-        
-        toolbar.addSeparator()
-        
-        # Navigasyon
+
         self.act_prev = QAction("◀ Önceki", self)
         self.act_prev.triggered.connect(self.prev_page)
         self.act_prev.setEnabled(False)
         toolbar.addAction(self.act_prev)
-        
+
         self.lbl_page = QLabel(" Sayfa: -/- ")
         toolbar.addWidget(self.lbl_page)
-        
+
         self.act_next = QAction("Sonraki ▶", self)
         self.act_next.triggered.connect(self.next_page)
         self.act_next.setEnabled(False)
         toolbar.addAction(self.act_next)
-        
         toolbar.addSeparator()
-        
-        # Analiz Butonu
+
         self.act_analyze = QAction("⚡ Analiz Et", self)
         self.act_analyze.triggered.connect(self.start_analysis)
         self.act_analyze.setEnabled(False)
         toolbar.addAction(self.act_analyze)
-        
         toolbar.addSeparator()
-        # OCR Butonu
+
         self.act_ocr_test = QAction("👁️ OCR vs PDF", self)
         self.act_ocr_test.triggered.connect(self.run_ocr_test)
         self.act_ocr_test.setEnabled(False)
         toolbar.addAction(self.act_ocr_test)
-        # Mod Butonları
+
         self.act_nav = QAction("✋ Gezin", self)
-        self.act_nav.setCheckable(True); self.act_nav.setChecked(True)
+        self.act_nav.setCheckable(True)
+        self.act_nav.setChecked(True)
         self.act_nav.triggered.connect(lambda: self.set_mode("NAVIGATE"))
         toolbar.addAction(self.act_nav)
-        
+
         self.act_draw = QAction("🟥 Kutu Çiz", self)
         self.act_draw.setCheckable(True)
         self.act_draw.triggered.connect(lambda: self.set_mode("DRAW"))
         toolbar.addAction(self.act_draw)
-        
-        # Bağlantı Kontrol Butonu
+
         self.act_check = QAction("🔗 Bağlantı Kontrol", self)
         self.act_check.triggered.connect(self.run_connection_check)
-        self.act_check.setEnabled(False) 
+        self.act_check.setEnabled(False)
         toolbar.addAction(self.act_check)
-        
-        # 3. Log Paneli
-        dock = QDockWidget("Loglar", self)
-        dock.setAllowedAreas(Qt.RightDockWidgetArea)
+
+        # Docks
+        dock_log = QDockWidget("Loglar", self)
         self.log_text = QTextEdit()
         self.log_text.setReadOnly(True)
-        dock.setWidget(self.log_text)
-        self.addDockWidget(Qt.RightDockWidgetArea, dock)
-        
-        # 4. Status Bar
+        dock_log.setWidget(self.log_text)
+        self.addDockWidget(Qt.RightDockWidgetArea, dock_log)
+
+        dock_table = QDockWidget("Bağlantı Listesi", self)
+        self.conn_table = QTableWidget()
+        self.conn_table.setColumnCount(4)
+        self.conn_table.setHorizontalHeaderLabels(["Hat/Bus", "Pin/Uç", "Hedef", "Pin"])
+        header = self.conn_table.horizontalHeader()
+        header.setSectionResizeMode(QHeaderView.Stretch)
+        self.conn_table.setAlternatingRowColors(True)
+        dock_table.setWidget(self.conn_table)
+        self.addDockWidget(Qt.BottomDockWidgetArea, dock_table)
+
         self.status_bar = self.statusBar()
 
-    def open_settings(self):
-        dialog = SettingsDialog(self.app_settings, self)
-        if dialog.exec_():
-            self.app_settings = dialog.get_settings()
-            self.log(f"Ayarlar güncellendi: {self.app_settings}")
-
-    def open_debug_log(self):
-        if self.debug_dialog is None:
-            self.debug_dialog = DebugLogDialog(self)
-        self.debug_dialog.show()
-        self.debug_dialog.raise_()
-
-    def debug_log(self, msg):
-        if self.debug_dialog:
-            self.debug_dialog.append_log(msg)
-
     def load_default_file(self):
-        """Otomatik olarak data/ornek.pdf dosyasını ve 18. sayfayı açar."""
-        # Proje kök dizinini bul
         base_dir = os.getcwd()
         default_path = os.path.join(base_dir, "data", "ornek.pdf")
-        
         if os.path.exists(default_path):
             self.log(f"Otomatik yükleme: {default_path}")
             if self.load_pdf_file(default_path):
-                # Dosya başarıyla açıldıysa sayfa 18'e git
-                target_page = 18
+                target_page = 27
                 if target_page <= self.total_pages:
                     self.current_page = target_page
                     self.load_current_page()
-                else:
-                    self.log(f"Uyarı: PDF {self.total_pages} sayfa, 18. sayfa açılamadı.")
         else:
-            self.log("Bilgi: 'data/ornek.pdf' bulunamadı, boş açılıyor.")
+            self.log(f"'{default_path}' bulunamadı.")
 
     def browse_pdf(self):
-        """Kullanıcıya dosya seçtirme diyaloğu."""
         path, _ = QFileDialog.getOpenFileName(self, "PDF Seç", "", "PDF (*.pdf)")
-        if path:
-            if self.load_pdf_file(path):
-                self.current_page = 1
-                self.load_current_page()
+        if path and self.load_pdf_file(path):
+            self.current_page = 1
+            self.load_current_page()
 
     def load_pdf_file(self, path):
-        """Verilen path'teki PDF'i açar (Mantıksal yükleme)."""
         try:
+            if self.doc: self.doc.close()
             self.doc = pymupdf.open(path)
             self.total_pages = len(self.doc)
-            self.log(f"PDF Yüklendi: {os.path.basename(path)} ({self.total_pages} sayfa)")
+            self.text_engine = None 
             return True
         except Exception as e:
-            QMessageBox.critical(self, "Hata", f"PDF açılamadı:\n{str(e)}")
+            QMessageBox.critical(self, "Hata", str(e))
             return False
 
     def load_current_page(self):
-        """Mevcut self.current_page'i ekrana ve viewer'a yükler."""
         if not self.doc: return
-        
         try:
-            # 1. Viewer'a resmi yükle (Arkaplanı temizler)
-            # PyMuPDF sayfa indexi 0'dan başlar, biz 1'den sayıyoruz.
-            page_index = self.current_page - 1
-            page = self.doc.load_page(page_index)
+            page = self.doc.load_page(self.current_page - 1)
             self.viewer.set_background_image(page)
-            
-            # 2. UI Durumlarını Güncelle
-            self.status_bar.showMessage(f"Sayfa {self.current_page} yüklendi.")
             self.lbl_page.setText(f" Sayfa: {self.current_page} / {self.total_pages} ")
-            
-            # Navigasyon butonlarını kontrol et
             self.act_prev.setEnabled(self.current_page > 1)
             self.act_next.setEnabled(self.current_page < self.total_pages)
-            
-            # Analiz butonunu aktif et
             self.act_analyze.setEnabled(True)
-            
-            # Eski analiz sonuçlarını ve bağlantı butonunu sıfırla
             self.act_check.setEnabled(False)
-            if hasattr(self, 'current_result'): 
-                del self.current_result
-            
-            # Kutu çizme modundaysa NAVIGATE'e geri alabiliriz (isteğe bağlı)
-            # self.set_mode("NAVIGATE") 
-            
+            self.act_ocr_test.setEnabled(False)
+            self.current_result = None
+            self.conn_table.setRowCount(0)
         except Exception as e:
-            self.log(f"Sayfa yükleme hatası: {e}")
+            self.log(f"Sayfa hatası: {e}")
 
     def prev_page(self):
-        """Önceki sayfaya geçer."""
         if self.current_page > 1:
             self.current_page -= 1
             self.load_current_page()
 
     def next_page(self):
-        """Sonraki sayfaya geçer."""
         if self.current_page < self.total_pages:
             self.current_page += 1
             self.load_current_page()
 
     def set_mode(self, mode):
-        """Modlar arası geçiş yapar."""
-        if mode == "NAVIGATE":
-            self.act_nav.setChecked(True); self.act_draw.setChecked(False)
-            self.viewer.set_mode("NAVIGATE")
-            self.status_bar.showMessage("Mod: Gezinme")
-        else:
-            self.act_nav.setChecked(False); self.act_draw.setChecked(True)
-            self.viewer.set_mode("DRAW")
-            self.status_bar.showMessage("Mod: Kutu Çizme (Hattın ucuna kutu çizin)")
+        self.viewer.set_mode(mode)
+        self.act_nav.setChecked(mode == "NAVIGATE")
+        self.act_draw.setChecked(mode == "DRAW")
+        self.status_bar.showMessage(f"Mod: {mode}")
 
     def start_analysis(self):
-        self.log(f"Sayfa {self.current_page} için analiz başlatılıyor...")
+        if not self.doc: return
+        self.log(f"Sayfa {self.current_page} analiz ediliyor...")
         self.act_analyze.setEnabled(False)
-        self.status_bar.showMessage("Analiz hesaplanıyor...")
-        
-        self.worker = AnalysisWorker(self.doc, self.current_page)
+        self.worker = AnalysisWorker(self.doc.name, self.current_page)
         self.worker.finished.connect(self.on_analysis_finished)
         self.worker.error.connect(self.on_error)
         self.worker.start()
 
     def on_analysis_finished(self, result):
         self.act_analyze.setEnabled(True)
-        self.status_bar.showMessage("Analiz Tamamlandı.")
         self.current_result = result
-        
-        # Ekrana Çiz
         self.viewer.draw_analysis_result(result)
         self.act_check.setEnabled(True)
         self.act_ocr_test.setEnabled(True)
-        
         self.log(f"Analiz Bitti. {len(result.structural_groups)} hat bulundu.")
-        
-        # Otomatik olarak bağlantı kontrolünü başlat
         self.run_connection_check()
 
-    def run_connection_check(self):
-        # 1. Çizilen kutuları al
-        manual_boxes = self.viewer.get_drawn_components()
-        
-        if not hasattr(self, 'current_result'):
-            self.log("UYARI: Önce 'Analiz Et' butonuna basmalısınız.")
-            return
+    def on_error(self, msg):
+        self.log(msg)
+        self.act_analyze.setEnabled(True)
 
-        # 2. Otomatik bulunan klemensleri CircuitComponent'e çevir
+    def run_ocr_test(self):
+        if not hasattr(self, "current_result") or not self.doc: return
+        self.ocr_worker = OCRComparisonWorker(self.doc.name, self.current_page, self.current_result)
+        self.ocr_worker.log_signal.connect(self.log)
+        self.ocr_worker.start()
+
+    def run_connection_check(self):
+        manual_boxes = self.viewer.get_drawn_components()
+        if not hasattr(self, "current_result"): return
+
+        matcher = None
+        try:
+            matcher = LabelMatcher(self.doc.load_page(self.current_page - 1))
+        except: pass
+
+        if not self.text_engine:
+            self.text_engine = HybridTextEngine(["en"])
+            if self.doc: self.text_engine.load_page(self.doc.load_page(self.current_page - 1))
+
+        if self.text_engine and manual_boxes:
+            ComponentNamer(self.text_engine).name_boxes(manual_boxes, self.log)
+
+        # 1. Klemens Dönüşümü
         terminal_components = []
-        if hasattr(self.current_result, 'terminals') and self.current_result.terminals:
-            from .circuit_logic import CircuitComponent
+        used_term_ids = {} # { "label": count }
+
+        if hasattr(self.current_result, "terminals") and self.current_result.terminals:
             for term in self.current_result.terminals:
-                # Klemens için Bounding Box oluştur (Merkez +/- Yarıçap)
-                cx, cy = term['center']
-                r = term['radius']
-                margin = 2.0
+                cx, cy = term["center"]
+                base_label = term.get("full_label") or term.get("label") or f"TERM"
                 
-                term_id = term.get('full_label') or f"TERM-{len(terminal_components)+1}"
-                
+                # Unique ID generation
+                if base_label in used_term_ids:
+                    used_term_ids[base_label] += 1
+                    term_id = f"{base_label} ({used_term_ids[base_label]})"
+                else:
+                    used_term_ids[base_label] = 1
+                    term_id = base_label
+
                 comp = CircuitComponent(
-                    id=term_id,
-                    label="Terminal",
-                    bbox={
-                        "min_x": cx - r - margin,
-                        "min_y": cy - r - margin,
-                        "max_x": cx + r + margin,
-                        "max_y": cy + r + margin
-                    }
+                    id=term_id, label="Terminal",
+                    bbox={"min_x": cx-2, "min_y": cy-2, "max_x": cx+2, "max_y": cy+2}
                 )
                 terminal_components.append(comp)
 
-        # 3. Tüm bileşenleri birleştir
-        all_components = manual_boxes + terminal_components
-        
-        # 4. Bağlantıları hesapla
-        from .circuit_logic import check_intersections
-        connections = check_intersections(all_components, self.current_result)
-        
-        # --- YENİ MODÜL ENTEGRASYONU: Pin Finder ---
-        # Manuel kutular içindeki açık uçları (pinleri) bul
-        if manual_boxes:
-            try:
-                from src.pin_finder import PinFinder
-                from src.text_engine import HybridTextEngine
-                
-                # Text Engine'i hazırla (eğer yoksa)
-                if not hasattr(self, 'text_engine'):
-                     self.text_engine = HybridTextEngine(['en'])
-                     if self.doc:
-                        self.text_engine.load_page(self.doc.load_page(self.current_page - 1))
-                
-                # Ayarları kullan
-                pin_finder = PinFinder(self.app_settings)
-                
-                # Debug penceresi açıksa loglama fonksiyonunu ver
-                if self.debug_dialog and self.debug_dialog.isVisible():
-                    pin_finder.set_debug_callback(self.debug_log)
-                
-                # Her hat için pin araması yap
-                for i, group in enumerate(self.current_result.structural_groups):
-                    net_id = f"NET-{i+1:03d}"
-                    
-                    # Bu hat için kutu içindeki pinleri bul
-                    found_pins = pin_finder.find_pins_for_group(group, manual_boxes, self.text_engine)
-                    
-                    # Bulunan pinleri connections listesine ekle
-                    if found_pins:
-                        if net_id not in connections:
-                            connections[net_id] = []
-                        
-                        for pin in found_pins:
-                            # Format: KutuAdı:PinAdı (örn: BOX-1:13)
-                            connections[net_id].append(pin['full_label'])
-                            
-            except Exception as e:
-                self.log(f"Pin bulma hatası: {e}")
-                import traceback
-                print(traceback.format_exc())
+        # 2. Bağlantı Kontrolü (NET-XXX ID'leri ile)
+        all_comps = manual_boxes + terminal_components
+        connections = check_intersections(all_comps, self.current_result)
 
-        # 5. Sonuçları Hiyerarşik Yazdır
+        # 3. BUSBAR TESPİTİ ve NET ID GÜNCELLEME
+        # Burası değişti: Busbar adı bulunursa, NET-XXX silinir, yerine Busbar adı (örn: P24) geçer.
+        if matcher:
+            busbar_map = BusbarFinder(matcher).find_busbars(
+                self.current_result.structural_groups, 
+                self.doc[0].rect.width if self.doc else 0,
+                manual_boxes, self.viewer
+            )
+            
+            # Map'teki her busbar için connections sözlüğündeki anahtarı değiştir
+            # Eski anahtar: 'NET-005', Yeni anahtar: 'P24'
+            new_connections = {}
+            for net_id, items in connections.items():
+                if net_id in busbar_map:
+                    new_id = busbar_map[net_id] # Örn: "P24"
+                    # Mevcut listeye busbar adını da ekle (referans olması için)
+                    items.insert(0, f"[BUSBAR: {new_id}]")
+                    
+                    # Eğer bu isimde bir hat zaten varsa birleştir, yoksa oluştur
+                    if new_id in new_connections:
+                        new_connections[new_id].extend(items)
+                    else:
+                        new_connections[new_id] = items
+                else:
+                    new_connections[net_id] = items
+            
+            connections = new_connections
+
+        # 4. Pin Finder (Kutu İçi Pinler)
+        if manual_boxes:
+            pin_finder = PinFinder(self.app_settings)
+            for i, group in enumerate(self.current_result.structural_groups):
+                # Orijinal ID'yi bulmamız lazım çünkü group index değişmedi
+                original_net_id = f"NET-{i+1:03d}"
+                
+                # Bu orijinal ID şu an connections içinde "P24" olmuş olabilir.
+                # Bunu bulmak için busbar_map'e bakabiliriz veya tersine arama yapabiliriz.
+                # Kolay yöntem: Bulunan pinleri, current target ID'ye eklemek.
+                
+                target_key = original_net_id
+                if matcher and original_net_id in busbar_map:
+                    target_key = busbar_map[original_net_id]
+
+                found_pins = pin_finder.find_pins_for_group(group, manual_boxes, self.text_engine)
+                if found_pins:
+                    pins_formatted = [p["full_label"] for p in found_pins]
+                    connections.setdefault(target_key, []).extend(pins_formatted)
+
+        # Raporlama
         self.log("\n====== BAĞLANTI RAPORU ======")
-        found_any = False
+        self.conn_table.setRowCount(0) 
         
-        sorted_nets = sorted(connections.keys())
-        
-        for net_id in sorted_nets:
-            comp_ids = connections[net_id]
+        # Sıralama: Önce Busbarlar (Alfabetik olmayan NET-XXX ler sona)
+        sorted_keys = sorted(connections.keys(), key=lambda k: (k.startswith("NET"), k))
+
+        for net_id in sorted_keys:
+            raw_ids = connections[net_id]
+            unique_ids = list(dict.fromkeys(raw_ids)) # Tekilleştir
             
-            # Tekrarları silme yok, hepsini alıyoruz
-            all_ids = sorted(comp_ids) 
+            # 1. Busbar ve Bileşenleri Ayır
+            busbar_name = None
+            components = []
             
-            if all_ids:
-                self.log(f"🔹 {net_id} Hattı:")
-                for comp_id in all_ids:
-                    icon = "🔌"
-                    if "BOX" in comp_id: icon = "📦"
-                    self.log(f"   └─ {icon} {comp_id}")
-                found_any = True
+            for uid in unique_ids:
+                if uid.startswith("[BUSBAR:"):
+                    # [BUSBAR: P24] -> P24
+                    busbar_name = uid.split(":")[1].strip(" ]")
+                else:
+                    components.append(uid)
+            
+            # 2. Pin Kontrolü (Pin'i olmayanları ayıkla ve logla)
+            valid_components = []
+            for comp_id in components:
+                if ":" in comp_id:
+                    valid_components.append(comp_id)
+                else:
+                    # Pin yoksa loga düş, tabloya ekleme
+                    self.log(f"⚠️ DİKKAT: '{comp_id}' cihazında/klemensinde pin tespit edilemedi (Hat: {net_id}).")
+
+            if not valid_components:
+                continue
+
+            # 3. Kaynak - Hedef Belirleme ve Tabloya Ekleme
+            if busbar_name:
+                # Senaryo A: Busbar Kaynak
+                # Busbar -> Tüm Valid Componentler
+                for target in valid_components:
+                    self._add_table_row(busbar_name, target)
+                    self.log(f"⚡ {busbar_name} ==> {target}")
+            else:
+                # Senaryo B: Normal Bağlantı (Net)
+                # Klemens var mı? (-X ile başlayanlar)
+                terminals = [c for c in valid_components if c.startswith("-X")]
+                devices = [c for c in valid_components if not c.startswith("-X")]
+                
+                # Eğer hiç geçerli bileşen yoksa atla
+                if not terminals and not devices:
+                    continue
+                    
+                # Kaynak Belirle
+                source = None
+                targets = []
+                
+                if terminals:
+                    # Klemens varsa, ilk klemens kaynak olur
+                    source = terminals[0]
+                    # Geriye kalanlar hedef (Diğer klemensler + cihazlar)
+                    targets = terminals[1:] + devices
+                else:
+                    # Sadece cihazlar varsa, ilki kaynak
+                    source = devices[0]
+                    targets = devices[1:]
+                
+                # Tabloya Ekle
+                for target in targets:
+                    self._add_table_row(source, target)
+                    self.log(f"🔹 {source} --> {target}")
+
+        if self.conn_table.rowCount() == 0:
+            self.log("❌ Tabloya eklenecek geçerli bağlantı bulunamadı.")
+
+    def _add_table_row(self, source, target):
+        row = self.conn_table.rowCount()
+        self.conn_table.insertRow(row)
         
-        if not found_any:
-            self.log("❌ Hiçbir bağlantı bulunamadı.")
-            self.log("İpucu: Klemensler veya kutular hatların üzerine gelmiyor olabilir.")    
-    def on_error(self, msg):
-        self.act_analyze.setEnabled(True)
-        self.status_bar.showMessage("Hata!")
-        QMessageBox.critical(self, "Analiz Hatası", msg)
+        s_tag, s_pin = self._parse_comp_id(source)
+        t_tag, t_pin = self._parse_comp_id(target)
+        
+        self.conn_table.setItem(row, 0, QTableWidgetItem(s_tag))
+        self.conn_table.setItem(row, 1, QTableWidgetItem(s_pin))
+        self.conn_table.setItem(row, 2, QTableWidgetItem(t_tag))
+        self.conn_table.setItem(row, 3, QTableWidgetItem(t_pin))
+
+    def _parse_comp_id(self, text):
+        if ":" in text:
+            parts = text.split(":", 1)
+            return parts[0], parts[1]
+        return text, ""
 
     def log(self, msg):
         self.log_text.append(msg)
-
-    def run_ocr_test(self):
-        """OCR ve PDF karşılaştırma işlemini başlatır."""
-        if not hasattr(self, 'current_result'):
-            return
-
-        self.log("\n====== OCR vs PDF KARŞILAŞTIRMA ======")
-        self.log("NOT: Bu işlem biraz zaman alabilir (GPU/CPU gücüne bağlı)...")
-        self.act_ocr_test.setEnabled(False) # Tekrar basılmasın
-        
-        # Worker Başlat
-        self.ocr_worker = OCRComparisonWorker(self.doc, self.current_page, self.current_result)
-        self.ocr_worker.log_signal.connect(self.log) # Logları ekrana bas
-        self.ocr_worker.finished_signal.connect(self.on_ocr_finished)
-        self.ocr_worker.start()
-
-    def on_ocr_finished(self):
-        self.act_ocr_test.setEnabled(True)
-        self.status_bar.showMessage("OCR Testi Bitti.")
-        self.log("====== TEST BİTTİ ======")
