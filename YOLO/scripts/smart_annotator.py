@@ -7,7 +7,23 @@ import os
 import cv2
 import json
 import numpy as np
+import logging
+from datetime import datetime
 from pathlib import Path
+
+# Setup Logging
+logging.basicConfig(
+    filename='annotator_debug.log',
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    filemode='a'
+)
+
+console = logging.StreamHandler()
+console.setLevel(logging.INFO)
+formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+console.setFormatter(formatter)
+logging.getLogger('').addHandler(console)
 
 # Ultralytics (YOLO) kütüphanesi varsa import et, yoksa hata vermesin
 try:
@@ -17,25 +33,28 @@ except ImportError:
     ULTRALYTICS_AVAILABLE = False
 
 # RENK PALETİ GÜNCELLEMESİ (BEYAZ ZEMİN ÜZERİNE KOYU RENKLER)
-# PDF Arkaplanı genelde beyaz olduğu için açık renkler (Sarı, Cyan vs.) yasak.
 COLOR_PALETTE = [
-    "#FF0000", # Kırmızı (Saf)
-    "#0000FF", # Mavi (Saf)
-    "#008000", # Koyu Yeşil
-    "#800080", # Mor
-    "#FF00FF", # Magenta (Koyu tonlarda durabilir)
-    "#800000", # Bordo
-    "#000080", # Lacivert
-    "#FF4500", # OrangeRed (Koyu Turuncu)
-    "#2F4F4F", # DarkSlateGray
-    "#4B0082"  # Indigo
+    "#FF3B30", # Modern Red
+    "#007AFF", # Modern Blue
+    "#34C759", # Modern Green
+    "#AF52DE", # Modern Purple
+    "#FF2D55", # Modern Pink
+    "#5856D6", # Modern Indigo
+    "#FF9500", # Modern Orange
+    "#5AC8FA", # Modern Teal
+    "#FFCC00", # Modern Yellow
+    "#8E8E93"  # Modern Gray
 ]
 
 class SmartAnnotator:
     def __init__(self, root):
         self.root = root
-        self.root.title("🏷️ Smart Annotator v4.2 (Dark Colors + Arrow Keys)")
+        self.root.title("🦁 P8 Smart Annotator | Pro Edition")
         self.root.geometry("1600x950")
+        self.root.configure(bg="#1c1c1e") # Apple Dark Mode Gray
+        
+        # Stil Ayarları
+        self._setup_styles()
         
         # --- DOSYA YOLU AYARLARI ---
         self.script_dir = Path(__file__).resolve().parent
@@ -65,6 +84,13 @@ class SmartAnnotator:
         # Etkileşim Durumları
         self.drag_data = {"x": 0, "y": 0, "item": None, "mode": None} # mode: 'move' or 'resize'
         self.resize_handle = None 
+        self.rect_start = None
+        self.current_rect_item = None 
+        
+        # Auto-Scan History
+        self.template_history = {} # {class_id: [cv2_image_crop, ...]}
+        self.auto_scan_active = tk.BooleanVar(value=True)
+        self.scan_threshold = 0.82
         
         # Sabit Boyut Modu
         self.fixed_size_mode = tk.BooleanVar(value=True)
@@ -84,6 +110,45 @@ class SmartAnnotator:
         self._build_ui()
         self._bind_shortcuts()
         
+        logging.info("Smart Annotator initialized.")
+        self._verify_data_integrity()
+
+    def _setup_styles(self):
+        style = ttk.Style()
+        style.theme_use('clam')
+        
+        # Renkler
+        bg_color = "#1c1c1e"
+        fg_color = "#ffffff"
+        accent_color = "#0A84FF"
+        
+        style.configure(".", background=bg_color, foreground=fg_color, font=("Segoe UI", 10))
+        style.configure("TFrame", background=bg_color)
+        style.configure("TLabel", background=bg_color, foreground=fg_color)
+        style.configure("TLabelframe", background=bg_color, foreground=fg_color, bordercolor="#3a3a3c")
+        style.configure("TLabelframe.Label", background=bg_color, foreground="#0A84FF", font=("Segoe UI", 11, "bold"))
+        
+        style.configure("TButton", background="#2c2c2e", foreground="white", borderwidth=0, focuscolor="none", font=("Segoe UI", 10, "bold"))
+        style.map("TButton", background=[("active", "#3a3a3c")])
+        
+        style.configure("Big.TButton", background=accent_color, foreground="white", font=("Segoe UI", 12, "bold"))
+        style.map("Big.TButton", background=[("active", "#007AFF")])
+        
+        style.configure("TCheckbutton", background=bg_color, foreground=fg_color)
+        style.configure("TEntry", fieldbackground="#2c2c2e", foreground="white", insertcolor="white", borderwidth=0)
+        style.configure("TCombobox", fieldbackground="#2c2c2e", background="#2c2c2e", foreground="white", arrowcolor="white")
+
+    def _verify_data_integrity(self):
+        """Veri klasörlerini kontrol et ve logla"""
+        img_count = len(list(self.images_dir.glob("*.jpg")))
+        lbl_count = len(list(self.labels_dir.glob("*.txt")))
+        logging.info(f"Data Integrity Check: Found {img_count} images and {lbl_count} labels.")
+        
+        if img_count != lbl_count:
+            logging.warning(f"MISMATCH: Image count ({img_count}) != Label count ({lbl_count})")
+        else:
+            logging.info("Data counts match. Ready for training collection.")
+            
     def _setup_directories(self):
         os.makedirs(self.images_dir, exist_ok=True)
         os.makedirs(self.labels_dir, exist_ok=True)
@@ -142,7 +207,8 @@ class SmartAnnotator:
         self.v_scroll = tk.Scrollbar(self.left_panel, orient=tk.VERTICAL)
         self.h_scroll = tk.Scrollbar(self.left_panel, orient=tk.HORIZONTAL)
         
-        self.canvas = tk.Canvas(self.left_panel, bg="#1e1e1e", cursor="tcross",
+        self.canvas = tk.Canvas(self.left_panel, bg="#000000", cursor="tcross",
+                                bd=0, highlightthickness=0,
                                 xscrollcommand=self.h_scroll.set,
                                 yscrollcommand=self.v_scroll.set)
         
@@ -171,7 +237,8 @@ class SmartAnnotator:
         self.right_panel.pack(side=tk.RIGHT, fill=tk.Y, padx=10, pady=10)
         self.right_panel.pack_propagate(False)
         
-        ttk.Label(self.right_panel, text="Smart Annotator v4", font=("Segoe UI", 14, "bold")).pack(pady=10)
+        ttk.Label(self.right_panel, text="🦁 P8 Analyzer", font=("Segoe UI", 16, "bold"), foreground="#0A84FF").pack(pady=(20, 10))
+        ttk.Label(self.right_panel, text="Smart Annotator", font=("Segoe UI", 10), foreground="gray").pack(pady=(0, 20))
         
         # Dosya
         frame_nav = ttk.LabelFrame(self.right_panel, text="Navigasyon")
@@ -207,12 +274,14 @@ class SmartAnnotator:
         ttk.Button(frame_box, text="💾 Sınıf İçin Kaydet", command=self._save_current_dimensions_for_class).pack(fill=tk.X, padx=5, pady=2)
 
         # Araçlar
-        frame_tools = ttk.LabelFrame(self.right_panel, text="Araçlar")
+        frame_tools = ttk.LabelFrame(self.right_panel, text="Otomasyon & Araçlar")
         frame_tools.pack(fill=tk.X, pady=5)
-        ttk.Button(frame_tools, text="🔍 Benzerleri Bul", command=self.find_similar_context).pack(fill=tk.X, padx=5, pady=2)
         
-        self.lbl_status = ttk.Label(frame_tools, text="Hazır", foreground="gray")
-        self.lbl_status.pack(pady=2)
+        ttk.Checkbutton(frame_tools, text="⚡ Otomatik Tara (History)", variable=self.auto_scan_active).pack(anchor="w", padx=5, pady=2)
+        ttk.Button(frame_tools, text="🔍 Seçileni Ara (Bu Sayfa)", command=self.find_similar_context).pack(fill=tk.X, padx=5, pady=2)
+        
+        self.lbl_status = ttk.Label(frame_tools, text="Sistem Hazır", foreground="#34C759", font=("Segoe UI", 9))
+        self.lbl_status.pack(pady=5)
 
         # Liste
         frame_list = ttk.LabelFrame(self.right_panel, text="Etiketler")
@@ -236,16 +305,24 @@ class SmartAnnotator:
         self._update_class_combo()
 
     def _bind_shortcuts(self):
-        self.root.bind("<s>", lambda e: self.save_page_data())
-        self.root.bind("<Delete>", lambda e: self.delete_selected_label())
+        self.root.bind("<s>", lambda e: self._on_shortcut(e, self.save_page_data))
+        self.root.bind("<Delete>", lambda e: self._on_shortcut(e, self.delete_selected_label))
         # Yön Tuşları ile Navigasyon
-        self.root.bind("<Right>", lambda e: self.next_page())
-        self.root.bind("<Left>", lambda e: self.prev_page())
-        # Alternatifler de kalsın
-        self.root.bind("<d>", lambda e: self.next_page())
-        self.root.bind("<a>", lambda e: self.prev_page())
+        self.root.bind("<Right>", lambda e: self._on_shortcut(e, self.next_page))
+        self.root.bind("<Left>", lambda e: self._on_shortcut(e, self.prev_page))
+        # Alternatifler
+        self.root.bind("<d>", lambda e: self._on_shortcut(e, self.next_page))
+        self.root.bind("<a>", lambda e: self._on_shortcut(e, self.prev_page))
+        
         for i in range(1, 10):
-            self.root.bind(str(i), lambda e, idx=i-1: self.select_class_by_index(idx))
+            self.root.bind(str(i), lambda e, idx=i-1: self._on_shortcut(e, lambda: self.select_class_by_index(idx)))
+
+    def _on_shortcut(self, event, action_func):
+        """Kısayol bir Entry içindeyken çalışmasın"""
+        if isinstance(event.widget, (tk.Entry, ttk.Entry)):
+            return
+        # Entry değilse aksiyonu çalıştır
+        action_func()
 
     # --- Core Functions ---
     def load_pdf(self):
@@ -272,7 +349,11 @@ class SmartAnnotator:
         self.annotations = []
         self.listbox_labels.delete(0, tk.END)
         self.btn_save.config(state=tk.NORMAL)
-        self._load_existing_labels()
+        
+        loaded = self._load_existing_labels()
+        if not loaded and self.auto_scan_active.get():
+            self.run_auto_scan_from_history()
+            
         self.update_display()
         
     def update_display(self):
@@ -320,12 +401,22 @@ class SmartAnnotator:
                 width = 3
                 self.canvas.create_rectangle(x1, y1, x2, y2, outline=col, width=3, tags=("box", f"box_{i}"))
                 
-                # Boyut Metni (Mavi)
+                # Boyut Metni ve Sınıf Adı
                 real_w_int = int(w_px)
                 real_h_int = int(h_px)
-                dim_text = f"{real_w_int}x{real_h_int}"
-                tx, ty = x1, y1 - 15
-                self.canvas.create_text(tx, ty, text=dim_text, fill="blue", font=("Arial", 10, "bold"), anchor="sw", tags=("info", f"info_{i}"))
+                
+                # Class Name lookup
+                cls_name = "Unknown"
+                for k, v in self.classes.items():
+                    if v == class_id: cls_name = k
+                
+                # Text: "Relay (50x50)"
+                info_text = f"{cls_name} ({real_w_int}x{real_h_int})"
+                
+                tx, ty = x1, y1 - 20
+                # Background rect for text readability
+                self.canvas.create_rectangle(tx, ty, tx + len(info_text)*7, y1, fill="black", outline=col, tags=("info", f"info_{i}"))
+                self.canvas.create_text(tx + 2, ty + 2, text=info_text, fill="yellow", font=("Arial", 9, "bold"), anchor="nw", tags=("info", f"info_{i}"))
                 
                 # Silme Butonu (X)
                 bx1, by1 = x2 - 5, y1 - 15
@@ -344,6 +435,7 @@ class SmartAnnotator:
                 self.canvas.create_rectangle(x1, y1, x2, y2, outline=col, width=width, tags=("box", f"box_{i}"))
 
     def on_mouse_move(self, event):
+        if not self.original_image: return
         cx = self.canvas.canvasx(event.x)
         cy = self.canvas.canvasy(event.y)
         
@@ -521,6 +613,7 @@ class SmartAnnotator:
 
     def on_left_up(self, event):
         if self.drag_data["mode"]:
+            self.save_labels() # Auto-Save after move/resize
             self.drag_data["mode"] = None
             self.drag_data["item"] = None
             return
@@ -560,7 +653,8 @@ class SmartAnnotator:
         self.listbox_labels.selection_clear(0, tk.END)
         self.listbox_labels.selection_set(self.selected_annotation_index)
         self.redraw_boxes()
-
+        self.save_labels() # Auto-Save
+        
     # --- Helpers ---
     def select_class_by_index(self, index):
         names = list(self.classes.keys())
@@ -619,14 +713,15 @@ class SmartAnnotator:
             self.selected_annotation_index = -1
             self.hovered_annotation_index = -1
             self.redraw_boxes()
-    
+            self.save_labels() # Auto-Save
+            
     def find_similar_context(self):
         if self.selected_annotation_index == -1: return
         idx = self.selected_annotation_index
         ann = self.annotations[idx]
         class_id, cx, cy, w, h = ann
         
-        self.lbl_status.config(text="Aranıyor...", foreground="blue")
+        self.lbl_status.config(text="Aranıyor...", foreground="#0A84FF")
         self.root.update()
         
         img_w, img_h = self.original_image.size
@@ -670,36 +765,170 @@ class SmartAnnotator:
             new_cnt += 1
         
         self.redraw_boxes()
-        self.lbl_status.config(text=f"Sonuç: {new_cnt} yeni")
+        self.lbl_status.config(text=f"Sonuç: {new_cnt} yeni bulgu")
+        if new_cnt > 0: self.save_labels() # Auto-Save
+
+    def run_auto_scan_from_history(self):
+        """Geçmiş sayfalardan toplanan şablonları kullanarak bu sayfada otomatik tarama yap"""
+        if not self.template_history:
+            return
+
+        self.lbl_status.config(text="Otomatik Taranıyor...", foreground="#FF9500")
+        self.root.update()
+
+        img_gray = cv2.cvtColor(self.cv2_image, cv2.COLOR_BGR2GRAY)
+        img_w, img_h = self.original_image.size
+        new_cnt = 0
         
+        # Mevcut noktaları al (overlap önlemek için)
+        existing_pts = [(a[1]*img_w, a[2]*img_h) for a in self.annotations]
+
+        for cls_id, templates in self.template_history.items():
+            # Her sınıf için en son 3 şablonu kullan (performans için)
+            recent_templates = templates[-3:] 
+            
+            for tmpl in recent_templates:
+                if tmpl.size == 0: continue
+                
+                tmpl_h, tmpl_w = tmpl.shape[:2]
+                tmpl_gray = cv2.cvtColor(tmpl, cv2.COLOR_BGR2GRAY) if len(tmpl.shape) == 3 else tmpl
+                
+                # Template image'dan büyükse atla
+                if tmpl_h > img_gray.shape[0] or tmpl_w > img_gray.shape[1]: continue
+
+                res = cv2.matchTemplate(img_gray, tmpl_gray, cv2.TM_CCOEFF_NORMED)
+                loc = np.where(res >= self.scan_threshold)
+
+                for pt in zip(*loc[::-1]):
+                    cnx = pt[0] + tmpl_w/2
+                    cny = pt[1] + tmpl_h/2
+                    
+                    # Duplicate Check
+                    is_dup = False
+                    for ex in existing_pts: # Basit mesafe kontrolü (20px)
+                        if ((cnx-ex[0])**2 + (cny-ex[1])**2)**0.5 < 20:
+                            is_dup = True
+                            break
+                    if is_dup: continue
+                    
+                    existing_pts.append((cnx, cny))
+                    self.annotations.append((cls_id, cnx/img_w, cny/img_h, tmpl_w/img_w, tmpl_h/img_h))
+                    
+                    # UI Listesine Ekle
+                    cls_name = "Unknown"
+                    for k,v in self.classes.items():
+                        if v == cls_id: cls_name = k
+                    self.listbox_labels.insert(tk.END, f"{cls_name} (AutoH)")
+                    
+                    new_cnt += 1
+        
+        if new_cnt > 0:
+            logging.info(f"Auto-Scan found {new_cnt} items from history on page {self.current_page_index}")
+            self.lbl_status.config(text=f"Auto: {new_cnt} eklendi", foreground="#34C759")
+            self.save_labels() # Auto-Save
+        else:
+            self.lbl_status.config(text="Auto: Sonuç yok", foreground="gray")
+
+    def _update_template_history(self):
+        """Mevcut sayfadaki etiketleri geçmişe kaydet"""
+        img_w, img_h = self.original_image.size
+        
+        for ann in self.annotations:
+            cls_id, cx, cy, w, h = ann
+            
+            # Piksel koordinatları
+            px_w, px_h = int(w*img_w), int(h*img_h)
+            px_cx, px_cy = int(cx*img_w), int(cy*img_h)
+            
+            x1 = max(0, px_cx - px_w//2)
+            y1 = max(0, px_cy - px_h//2)
+            x2 = min(img_w, x1 + px_w)
+            y2 = min(img_h, y1 + px_h)
+            
+            crop = self.cv2_image[y1:y2, x1:x2]
+            if crop.size == 0: continue
+            
+            if cls_id not in self.template_history:
+                self.template_history[cls_id] = []
+            
+            # Sadece benzersiz (veya çok benzer olmayan) şablonları ekle
+            self.template_history[cls_id].append(crop)
+            # Max 5 template sakla
+            if len(self.template_history[cls_id]) > 5:
+                self.template_history[cls_id].pop(0)
+
     def _load_existing_labels(self):
         label_path = self.labels_dir / f"{self.pdf_name}_page_{self.current_page_index}.txt"
         if label_path.exists():
-            with open(label_path, 'r') as f:
-                lines = f.readlines()
-                for line in lines:
-                    parts = line.strip().split()
-                    if len(parts) >= 5:
-                        cls_id = int(parts[0])
-                        cx, cy, w, h = map(float, parts[1:5])
-                        self.annotations.append((cls_id, cx, cy, w, h))
-                        cname = "Unknown"
-                        for k, v in self.classes.items():
-                            if v == cls_id: cname = k
-                        self.listbox_labels.insert(tk.END, cname)
+            try:
+                with open(label_path, 'r') as f:
+                    lines = f.readlines()
+                    for line in lines:
+                        parts = line.strip().split()
+                        if len(parts) >= 5:
+                            cls_id = int(parts[0])
+                            cx, cy, w, h = map(float, parts[1:5])
+                            self.annotations.append((cls_id, cx, cy, w, h))
+                            cname = "Unknown"
+                            for k, v in self.classes.items():
+                                if v == cls_id: cname = k
+                            self.listbox_labels.insert(tk.END, cname)
+                return True
+            except Exception as e:
+                logging.error(f"Error loading labels: {e}")
+                return False
+        return False
+
+    def save_labels(self):
+        """Sadece etiketleri (ve gerekirse resmi) kaydet"""
+        if not self.original_image: return
+        
+        try:
+            base_name = f"{self.pdf_name}_page_{self.current_page_index}"
+            
+            # 1. Resim kontrolü (Yoksa oluştur)
+            img_path = self.images_dir / f"{base_name}.jpg"
+            if not img_path.exists():
+                self.original_image.save(img_path, quality=95)
+            
+            # 2. Etiketleri Kaydet (.txt)
+            txt_path = self.labels_dir / f"{base_name}.txt"
+            with open(txt_path, 'w') as f:
+                for ann in self.annotations:
+                    # class_id center_x center_y width height
+                    f.write(f"{ann[0]} {ann[1]:.6f} {ann[2]:.6f} {ann[3]:.6f} {ann[4]:.6f}\n")
+            
+            # 3. History Güncelle (Auto-scan için)
+            self._update_template_history()
+            
+            # UI Feedback (Hafif)
+            self.lbl_status.config(text="Kaydedildi (Auto)", foreground="#34C759")
+            logging.info(f"AUTO-SAVE: {base_name} | {len(self.annotations)} labels.")
+            
+        except Exception as e:
+            logging.error(f"AUTO-SAVE ERROR: {e}")
+            self.lbl_status.config(text="Kaydetme Hatası!", foreground="red")
 
     def save_page_data(self):
+        """Manuel Kaydet Butonu için (Resmi zorla üzerine yazar)"""
         if not self.original_image: return
-        base_name = f"{self.pdf_name}_page_{self.current_page_index}"
-        img_path = self.images_dir / f"{base_name}.jpg"
-        self.original_image.save(img_path, quality=95)
-        txt_path = self.labels_dir / f"{base_name}.txt"
-        with open(txt_path, 'w') as f:
-            for ann in self.annotations:
-                f.write(f"{ann[0]} {ann[1]:.6f} {ann[2]:.6f} {ann[3]:.6f} {ann[4]:.6f}\n")
-        self.lbl_status.config(text="KAYDEDİLDİ ✅", foreground="green")
-        print(f"Saved: {base_name}")
-
+        try:
+            base_name = f"{self.pdf_name}_page_{self.current_page_index}"
+            
+            # Resmi Zorla Kaydet (Overwrite)
+            img_path = self.images_dir / f"{base_name}.jpg"
+            self.original_image.save(img_path, quality=95)
+            
+            # Etiketleri Kaydet
+            self.save_labels()
+            
+            self.lbl_status.config(text="TAM KAYIT (Resim+Etiket) ✅", foreground="#34C759")
+            messagebox.showinfo("Bilgi", "Resim ve Etiketler başarıyla diske yazıldı.")
+            
+        except Exception as e:
+            logging.error(f"MANUAL SAVE ERROR: {e}")
+            messagebox.showerror("Hata", f"Kaydetme hatası: {e}")
+    
     def on_zoom(self, event):
         if not self.original_image: return
         self.zoom_level *= 1.1 if event.delta > 0 else 0.9

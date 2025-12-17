@@ -8,6 +8,7 @@ import glob
 import heapq
 import threading
 import time
+from pathlib import Path
 
 # --- Helper Functions from process_image.py ---
 
@@ -178,9 +179,23 @@ def extract_symbols(image_path, label_path):
         lines = f.readlines()
     for line in lines:
         parts = line.strip().split()
-        if len(parts) < 9: continue
-        class_index = int(parts[0])
-        poly_norm = np.array(parts[1:], dtype=np.float32).reshape(-1, 2)
+        if len(parts) == 5:
+            # Standard YOLO: class xc yc w h
+            class_index = int(parts[0])
+            xc, yc, nw, nh = map(float, parts[1:])
+            x1 = xc - nw / 2
+            y1 = yc - nh / 2
+            x2 = xc + nw / 2
+            y2 = yc + nh / 2
+            poly_norm = np.array([
+                [x1, y1], [x2, y1], [x2, y2], [x1, y2]
+            ], dtype=np.float32)
+        elif len(parts) >= 9:
+            # OBB/Segmentation: class x1 y1 x2 y2 ...
+            class_index = int(parts[0])
+            poly_norm = np.array(parts[1:], dtype=np.float32).reshape(-1, 2)
+        else:
+            continue
         poly = (poly_norm * np.array([w, h])).astype(np.int32)
         rect = cv2.boundingRect(poly)
         x, y, rect_w, rect_h = rect
@@ -321,12 +336,15 @@ def place_symbols_with_pathfinding(symbols_with_classes, canvas_size=(1024, 1024
                 main_contour = max(contours, key=cv2.contourArea)
                 main_contour[:, :, 0] += rand_x
                 main_contour[:, :, 1] += rand_y
-                obb = cv2.minAreaRect(main_contour)
-                box = cv2.boxPoints(obb)
-                box[:, 0] /= canvas_w
-                box[:, 1] /= canvas_h
-                points = box.flatten()
-                label_str = f"{class_index} {points[0]:.6f} {points[1]:.6f} {points[2]:.6f} {points[3]:.6f} {points[4]:.6f} {points[5]:.6f} {points[6]:.6f} {points[7]:.6f}"
+                
+                # Modified for Standard YOLO Output (xc yc w h)
+                bx, by, bw, bh = cv2.boundingRect(main_contour)
+                xc = (bx + bw / 2.0) / canvas_w
+                yc = (by + bh / 2.0) / canvas_h
+                wn = bw / float(canvas_w)
+                hn = bh / float(canvas_h)
+                
+                label_str = f"{class_index} {xc:.6f} {yc:.6f} {wn:.6f} {hn:.6f}"
                 new_labels.append(label_str)
             if idx < len(placed_masks):
                 new_placed_masks.append(placed_masks[idx])
@@ -356,8 +374,11 @@ class SyntheticGeneratorGUI:
         self.root.geometry("600x450")
         
         # Variables
-        self.source_dir = tk.StringVar()
-        self.output_dir = tk.StringVar()
+        base_path = Path(__file__).resolve().parent.parent
+        data_path = base_path / "data"
+        
+        self.source_dir = tk.StringVar(value=str(data_path))
+        self.output_dir = tk.StringVar(value=str(data_path / "synthetic"))
         self.num_images = tk.IntVar(value=100)
         self.status_var = tk.StringVar(value="Hazır")
         self.is_running = False
