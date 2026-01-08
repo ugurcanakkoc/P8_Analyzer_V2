@@ -1,0 +1,23 @@
+# P8_Analyzer_V2 Dependencies
+
+# GUI Framework
+PyQt5>=5.15.0
+
+# PDF Processing
+pymupdf>=1.23.0
+
+# Data Models
+pydantic>=2.0.0
+
+# Image Processing
+Pillow>=9.0.0
+numpy>=1.21.0
+
+# Vector Analysis (UVP)
+cairosvg>=2.7.0
+
+# Optional: OCR (for label detection fallback)
+# easyocr>=1.7.0
+
+# Optional: YOLO (for component detection)
+# ultralytics>=8.0.0

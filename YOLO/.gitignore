@@ -1,0 +1,28 @@
+# YOLO Training Artifacts
+# ======================
+
+# Model weights (large files, track with Git LFS or keep out of repo)
+*.pt
+!yolov8n.pt
+!yolov8n-obb.pt
+
+# Training runs output
+runs/
+
+# Cache directories
+__pycache__/
+*.pyc
+.cache/
+
+# Temporary augmentation outputs
+data/augmented_temp/
+*.tmp
+
+# Large dataset files (if you have them locally but don't want in git)
+# Uncomment to exclude:
+# data/images/train/*.jpg
+# data/images/train/*.png
+
+# OS files
+.DS_Store
+Thumbs.db

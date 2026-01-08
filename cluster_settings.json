@@ -1,0 +1,11 @@
+{
+  "vertical_weight": 1.5,
+  "absolute_min_gap": 90.0,
+  "density_factor": 5.5,
+  "max_gap": 270.0,
+  "cross_color_penalty": 2.0,
+  "label_max_distance": 150.0,
+  "label_cluster_size_factor": 0.5,
+  "label_subsume_threshold": 0.5,
+  "visualization_scale": 2.0
+}

@@ -47,7 +47,7 @@ venv.bak/
 # *.onnx
 
 # External Repos (if managed manually or via submodules)
-external/
+# external/  # Now included in repo for self-contained builds
 
 # Logs & Temporary Files
 *.log
@@ -60,3 +60,18 @@ eski dosyalar/
 # OS Specific
 .DS_Store
 Thumbs.db
+
+# Generated Visualizations & Images
+*.png
+*.jpg
+*.jpeg
+YOLO/visualizations/
+YOLO/data/
+
+# Model files (large binaries)
+*.pt
+*.pth
+*.onnx
+
+# YOLO runs/outputs
+YOLO/runs/

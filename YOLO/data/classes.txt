@@ -1,0 +1,10 @@
+PLC_Module
+Terminal
+Contactor
+Relay
+Circuit_Breaker
+Fuse
+Motor
+Transformer
+motor-koruma
+aydinlatma

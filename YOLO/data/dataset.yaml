@@ -1,0 +1,41 @@
+# P8 Electrical Schematic Component Detection Dataset
+# OBB (Oriented Bounding Box) format for rotated component detection
+#
+# Directory structure:
+#   data/
+#     images/
+#       train/  # Training images (60%)
+#       val/    # Validation images (20%)
+#       test/   # Test images (20%)
+#     labels/
+#       train/  # Training labels (OBB format: class x1 y1 x2 y2 x3 y3 x4 y4)
+#       val/
+#       test/
+
+# Dataset root directory (relative to this file's location)
+path: .
+
+# Image directories (relative to 'path')
+train: images/train
+val: images/val
+test: images/test
+
+# Task type: Object detection with oriented bounding boxes
+# Use yolov8n-obb.pt as base model for training
+task: obb
+
+# Component classes for P8 electrical schematics
+names:
+  0: PLC_Module
+  1: Terminal
+  2: Contactor
+  3: Relay
+  4: Circuit_Breaker
+  5: Fuse
+  6: Motor
+  7: Transformer
+
+# Label format: OBB (8 normalized values per box)
+# Each line: class_id x1 y1 x2 y2 x3 y3 x4 y4
+# Coordinates are normalized to [0, 1] range
+# Points represent 4 corners of the rotated bounding box
