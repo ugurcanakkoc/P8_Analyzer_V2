@@ -54,15 +54,15 @@ class BusbarFinder:
             current_color = debug_colors[color_idx % len(debug_colors)]
             color_idx += 1
             
-            # --- GÖRSELLEŞTİRME ---
-            if viewer:
-                from PyQt5.QtGui import QColor
-                viewer.draw_debug_point(
-                    (target_x, target_y), 
-                    color=QColor(current_color), 
-                    radius=6.0
-                )
-                viewer.draw_debug_rect(search_rect, color=QColor(current_color), label=f"Scan")
+            # --- GÖRSELLEŞTİRME (disabled - creates visual clutter) ---
+            # if viewer:
+            #     from PyQt5.QtGui import QColor
+            #     viewer.draw_debug_point(
+            #         (target_x, target_y),
+            #         color=QColor(current_color),
+            #         radius=6.0
+            #     )
+            #     viewer.draw_debug_rect(search_rect, color=QColor(current_color), label=f"Scan")
 
             # 5. ETİKET ARAMA (Mesafe öncelikli)
             # target_y parametresini gönderiyoruz ki mesafeyi ölçebilsin

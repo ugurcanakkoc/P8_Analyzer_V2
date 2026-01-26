@@ -455,28 +455,155 @@ def has_long_straight_lines(group: List[Dict], config: AnalysisConfig) -> bool:
     return False
 
 
-def categorize_groups(continuous_groups: List[List[Dict]], 
+def _trace_wire_path(paths: List[PathElement], broken_connections: List[Dict] = None) -> List[PathElement]:
+    """Trace wire path by following connected endpoints to produce ordered elements.
+
+    Traces from one wire endpoint to the other by following connected segments.
+    Starts from the endpoint with highest Y (bottom of page in PDF coordinates).
+    Tracks entry/exit points to correctly handle junctions.
+
+    Args:
+        paths: Unordered list of path elements in the group
+        broken_connections: List of broken line connections with path indices
+
+    Returns:
+        List of PathElements ordered along the wire trace
+    """
+    if len(paths) <= 1:
+        return paths
+
+    # Build index lookup
+    index_to_path = {p.index: p for p in paths}
+    path_indices = set(index_to_path.keys())
+
+    # Build adjacency with endpoint tracking: (path_index, which_end) -> [(neighbor_index, neighbor_end)]
+    # This tracks which end of each path connects to which end of other paths
+    endpoint_adjacency = defaultdict(list)
+    bucket_size = 2.0
+
+    def point_key(p):
+        return (round(p.x / bucket_size) * bucket_size, round(p.y / bucket_size) * bucket_size)
+
+    # Map point -> list of (path_index, which_end)
+    point_to_endpoints = defaultdict(list)
+    for path in paths:
+        start_key = point_key(path.start_point)
+        end_key = point_key(path.end_point)
+        point_to_endpoints[start_key].append((path.index, 'start'))
+        point_to_endpoints[end_key].append((path.index, 'end'))
+
+    # Build endpoint adjacency: endpoints at same point are adjacent
+    for key, endpoints in point_to_endpoints.items():
+        for i, (idx1, end1) in enumerate(endpoints):
+            for idx2, end2 in endpoints[i+1:]:
+                endpoint_adjacency[(idx1, end1)].append((idx2, end2))
+                endpoint_adjacency[(idx2, end2)].append((idx1, end1))
+
+    # Add broken connections (they connect endpoints across gaps)
+    # Use gap_start and gap_end to determine which endpoints are connected
+    if broken_connections:
+        for conn in broken_connections:
+            p1 = conn.get('path1_index') if isinstance(conn, dict) else conn.path1_index
+            p2 = conn.get('path2_index') if isinstance(conn, dict) else conn.path2_index
+            if p1 in path_indices and p2 in path_indices:
+                path1 = index_to_path[p1]
+                path2 = index_to_path[p2]
+
+                # Get gap points
+                gap_start = conn.get('gap_start') if isinstance(conn, dict) else conn.gap_start
+                gap_end = conn.get('gap_end') if isinstance(conn, dict) else conn.gap_end
+
+                # Determine which end of path1 is at gap_start
+                d_start1 = (path1.start_point.x - gap_start.x)**2 + (path1.start_point.y - gap_start.y)**2
+                d_end1 = (path1.end_point.x - gap_start.x)**2 + (path1.end_point.y - gap_start.y)**2
+                p1_end = 'start' if d_start1 < d_end1 else 'end'
+
+                # Determine which end of path2 is at gap_end
+                d_start2 = (path2.start_point.x - gap_end.x)**2 + (path2.start_point.y - gap_end.y)**2
+                d_end2 = (path2.end_point.x - gap_end.x)**2 + (path2.end_point.y - gap_end.y)**2
+                p2_end = 'start' if d_start2 < d_end2 else 'end'
+
+                # Connect the correct endpoints
+                endpoint_adjacency[(p1, p1_end)].append((p2, p2_end))
+                endpoint_adjacency[(p2, p2_end)].append((p1, p1_end))
+
+    # Find wire ends: endpoints with only 1 connection (degree 1)
+    endpoint_degrees = {}
+    for path in paths:
+        for which_end in ['start', 'end']:
+            key = (path.index, which_end)
+            endpoint_degrees[key] = len(endpoint_adjacency[key])
+
+    wire_end_keys = [key for key, deg in endpoint_degrees.items() if deg <= 1]
+
+    if not wire_end_keys:
+        return paths
+
+    # Start from wire end with highest Y (bottom of page)
+    def get_y(key):
+        path = index_to_path[key[0]]
+        return path.start_point.y if key[1] == 'start' else path.end_point.y
+
+    wire_end_keys.sort(key=lambda k: -get_y(k))
+    start_key = wire_end_keys[0]
+
+    # Trace from start, following endpoint connections
+    ordered = []
+    visited_paths = set()
+    current_path_idx, current_end = start_key
+
+    while current_path_idx is not None and current_path_idx not in visited_paths:
+        path = index_to_path[current_path_idx]
+        ordered.append(path)
+        visited_paths.add(current_path_idx)
+
+        # Exit from the opposite end
+        exit_end = 'end' if current_end == 'start' else 'start'
+        exit_key = (current_path_idx, exit_end)
+
+        # Find next unvisited path connected at exit point
+        next_path_idx = None
+        next_entry_end = None
+        for neighbor_idx, neighbor_end in endpoint_adjacency[exit_key]:
+            if neighbor_idx not in visited_paths and neighbor_idx in index_to_path:
+                next_path_idx = neighbor_idx
+                next_entry_end = neighbor_end
+                break
+
+        current_path_idx = next_path_idx
+        current_end = next_entry_end
+
+    # Add any remaining unvisited paths at the end
+    for path in paths:
+        if path.index not in visited_paths:
+            ordered.append(path)
+
+    return ordered
+
+
+def categorize_groups(continuous_groups: List[List[Dict]],
                      circles: List[Circle],
-                     config: AnalysisConfig) -> Tuple[List[StructuralGroup], List[StructuralGroup], List[PathElement]]:
+                     config: AnalysisConfig,
+                     broken_connections: List[Dict] = None) -> Tuple[List[StructuralGroup], List[StructuralGroup], List[PathElement]]:
     """Kategorisiert Gruppen in strukturelle, text-ähnliche und Einzelelemente.
-    
+
     Args:
         continuous_groups: Liste aller kontinuierlichen Gruppen
         circles: Liste aller erkannten Kreise
         config: Analyse-Konfiguration
-        
+
     Returns:
         Tupel aus (strukturelle Gruppen, text-ähnliche Gruppen, Einzelelemente)
     """
     structural_groups = []
     text_like_groups = []
     single_elements = []
-    
+
     for group_idx, group in enumerate(continuous_groups):
         # Konvertiere Gruppe zu PathElements und Circles
         group_paths = []
         group_circles = []
-        
+
         for item in group:
             if item['type'] == 'path':
                 path_elem = PathElement(
@@ -492,14 +619,17 @@ def categorize_groups(continuous_groups: List[List[Dict]],
                 circle_obj = next((c for c in circles if c.index == item['index']), None)
                 if circle_obj:
                     group_circles.append(circle_obj)
-        
+
         # Prüfe ob es eine strukturelle Gruppe ist
         if len(group) >= config.min_structural_group_size and has_long_straight_lines(group, config):
+            # Order paths along the wire trace using known connections
+            ordered_paths = _trace_wire_path(group_paths, broken_connections)
+
             color = get_pleasant_color(len(structural_groups), len(continuous_groups))
             structural_groups.append(StructuralGroup(
                 group_id=len(structural_groups),
                 color=color,
-                elements=group_paths,
+                elements=ordered_paths,
                 circles=group_circles,
                 has_long_lines=True,
                 group_type="structural"

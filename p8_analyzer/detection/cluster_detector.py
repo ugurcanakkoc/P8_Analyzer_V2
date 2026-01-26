@@ -531,7 +531,8 @@ def visualize_clusters(
     line_ends: List[FilteredLineEnd],
     output_path: str,
     scale: float = 2.0,
-    structural_groups: List[StructuralGroup] = None
+    structural_groups: List[StructuralGroup] = None,
+    show_cluster_boxes: bool = True
 ) -> str:
     """
     Visualize clustering results with labels associated by color.
@@ -570,26 +571,27 @@ def visualize_clusters(
             assigned_labels.add(id(cluster.label))
 
     # Layer 2: Draw cluster bounding boxes (without labels inside)
-    for cluster in clusters:
-        # Use cluster's primary color
-        color_hex = cluster.primary_color.lstrip('#')
-        r, g, b = int(color_hex[0:2], 16), int(color_hex[2:4], 16), int(color_hex[4:6], 16)
-        
-        # Get cluster bbox (objects only, not expanded to include label)
-        x0, y0, x1, y1 = [c * scale for c in cluster.bbox]
-        
-        if cluster.label:
-            # Labeled cluster: solid color fill and outline
-            draw.rectangle([x0, y0, x1, y1],
-                          fill=(r, g, b, 60),
-                          outline=(r, g, b),
-                          width=3)
-        else:
-            # Unlabeled cluster: lighter appearance
-            draw.rectangle([x0, y0, x1, y1],
-                          fill=(r, g, b, 30),
-                          outline=(r, g, b, 150),
-                          width=1)
+    if show_cluster_boxes:
+        for cluster in clusters:
+            # Use cluster's primary color
+            color_hex = cluster.primary_color.lstrip('#')
+            r, g, b = int(color_hex[0:2], 16), int(color_hex[2:4], 16), int(color_hex[4:6], 16)
+
+            # Get cluster bbox (objects only, not expanded to include label)
+            x0, y0, x1, y1 = [c * scale for c in cluster.bbox]
+
+            if cluster.label:
+                # Labeled cluster: solid color fill and outline
+                draw.rectangle([x0, y0, x1, y1],
+                              fill=(r, g, b, 60),
+                              outline=(r, g, b),
+                              width=3)
+            else:
+                # Unlabeled cluster: lighter appearance
+                draw.rectangle([x0, y0, x1, y1],
+                              fill=(r, g, b, 30),
+                              outline=(r, g, b, 150),
+                              width=1)
 
     # Layer 3: Draw objects within clusters
     # Gap fills (rectangles)

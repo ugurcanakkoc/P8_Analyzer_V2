@@ -1,4 +1,4 @@
-from PyQt5.QtWidgets import QGraphicsView, QGraphicsScene, QGraphicsPathItem, QGraphicsRectItem, QGraphicsSimpleTextItem, QGraphicsEllipseItem
+from PyQt5.QtWidgets import QGraphicsView, QGraphicsScene, QGraphicsPathItem, QGraphicsRectItem, QGraphicsSimpleTextItem, QGraphicsEllipseItem, QGraphicsDropShadowEffect
 from PyQt5.QtCore import Qt, QRectF
 from PyQt5.QtGui import QPainter, QPen, QColor, QBrush, QPainterPath, QFont, QPixmap, QImage
 import pymupdf
@@ -14,12 +14,21 @@ class InteractiveGraphicsView(QGraphicsView):
         self.scene = QGraphicsScene()
         self.setScene(self.scene)
         self.setRenderHint(QPainter.Antialiasing)
-        
+
         self.mode = "NAVIGATE"
         self.temp_rect = None
         self.start_pos = None
-        self.drawn_boxes = [] 
+        self.drawn_boxes = []
         self.tagger_callback = None
+
+        # Highlight tracking
+        self._highlight_items = []
+        self._structural_groups = []
+        self._show_clusters = True  # Cluster boxes visible by default
+
+        # Pan tracking for right-click drag
+        self._panning = False
+        self._pan_start = None
 
     def set_tagger_callback(self, callback):
         self.tagger_callback = callback
@@ -88,7 +97,8 @@ class InteractiveGraphicsView(QGraphicsView):
             # Use same scale as CLI visualization (scale=2.0)
             visualize_clusters(
                 page, clusters, labels, gap_fills, circle_pins, line_ends,
-                tmp_path, scale=2.0, structural_groups=structural_groups
+                tmp_path, scale=2.0, structural_groups=structural_groups,
+                show_cluster_boxes=self._show_clusters
             )
 
             # Load the rendered image
@@ -123,7 +133,7 @@ class InteractiveGraphicsView(QGraphicsView):
         self.scene.addItem(ellipse)
 
         label = terminal.get('full_label') or terminal.get('label')
-        if label and label != '?':
+        if label:
             text = QGraphicsSimpleTextItem(str(label))
             text.setPos(cx + radius + 2, cy - radius - 5)
             text.setFont(QFont("Arial", 6))
@@ -298,6 +308,14 @@ class InteractiveGraphicsView(QGraphicsView):
             self.setCursor(Qt.OpenHandCursor)
 
     def mousePressEvent(self, event):
+        # Right-click starts panning
+        if event.button() == Qt.RightButton:
+            self._panning = True
+            self._pan_start = event.pos()
+            self.setCursor(Qt.ClosedHandCursor)
+            event.accept()
+            return
+
         if self.mode == "DRAW" and event.button() == Qt.LeftButton:
             self.start_pos = self.mapToScene(event.pos())
             self.temp_rect = QGraphicsRectItem()
@@ -307,6 +325,20 @@ class InteractiveGraphicsView(QGraphicsView):
             super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event):
+        # Handle panning with right-click drag
+        if self._panning and self._pan_start is not None:
+            delta = event.pos() - self._pan_start
+            self._pan_start = event.pos()
+            # Move the scrollbars to pan
+            self.horizontalScrollBar().setValue(
+                self.horizontalScrollBar().value() - delta.x()
+            )
+            self.verticalScrollBar().setValue(
+                self.verticalScrollBar().value() - delta.y()
+            )
+            event.accept()
+            return
+
         if self.mode == "DRAW" and self.temp_rect:
             curr_pos = self.mapToScene(event.pos())
             rect = QRectF(self.start_pos, curr_pos).normalized()
@@ -315,6 +347,18 @@ class InteractiveGraphicsView(QGraphicsView):
             super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event):
+        # End panning
+        if event.button() == Qt.RightButton and self._panning:
+            self._panning = False
+            self._pan_start = None
+            # Restore cursor based on mode
+            if self.mode == "DRAW":
+                self.setCursor(Qt.CrossCursor)
+            else:
+                self.setCursor(Qt.OpenHandCursor)
+            event.accept()
+            return
+
         if self.mode == "DRAW" and self.temp_rect:
             rect = self.temp_rect.rect()
             self.scene.removeItem(self.temp_rect)
@@ -381,8 +425,119 @@ class InteractiveGraphicsView(QGraphicsView):
         self.scene.addItem(ellipse)
 
     def wheelEvent(self, event):
-        if event.modifiers() & Qt.ControlModifier:
-            if event.angleDelta().y() > 0: self.scale(1.25, 1.25)
-            else: self.scale(0.8, 0.8)
+        # Zoom with mousewheel (no modifier needed)
+        # Zoom towards cursor position for better UX
+        old_pos = self.mapToScene(event.pos())
+
+        if event.angleDelta().y() > 0:
+            scale_factor = 1.25
         else:
-            super().wheelEvent(event)
+            scale_factor = 0.8
+
+        self.scale(scale_factor, scale_factor)
+
+        # Adjust view to keep cursor position stable
+        new_pos = self.mapToScene(event.pos())
+        delta = new_pos - old_pos
+        self.translate(delta.x(), delta.y())
+
+        event.accept()
+
+    def set_structural_groups(self, groups):
+        """Store structural groups for highlighting."""
+        self._structural_groups = groups or []
+
+    def highlight_structural_group(self, group_index, color_hex=None):
+        """
+        Highlight a specific structural group with a glowing shadow effect.
+
+        Args:
+            group_index: Index of the structural group (0-based)
+            color_hex: Optional color override (hex string like '#FF0000')
+        """
+        # Clear previous highlights
+        self.clear_highlights()
+
+        if group_index < 0 or group_index >= len(self._structural_groups):
+            return
+
+        group = self._structural_groups[group_index]
+
+        # Get color from group or use override
+        if color_hex:
+            color_str = color_hex
+        else:
+            color_str = getattr(group, 'color', '#FF0000')
+
+        # Parse color
+        color_str = color_str.lstrip('#')
+        r, g, b = int(color_str[0:2], 16), int(color_str[2:4], 16), int(color_str[4:6], 16)
+        highlight_color = QColor(r, g, b)
+
+        # Draw highlighted path with thick glow effect
+        for elem in group.elements:
+            # Create shadow/glow path (thicker, semi-transparent)
+            shadow_path = QPainterPath()
+            shadow_path.moveTo(elem.start_point.x, elem.start_point.y)
+            shadow_path.lineTo(elem.end_point.x, elem.end_point.y)
+
+            shadow_item = QGraphicsPathItem(shadow_path)
+            shadow_item.setPen(QPen(QColor(r, g, b, 100), 12.0, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+            shadow_item.setZValue(90)  # Below main highlight
+            self.scene.addItem(shadow_item)
+            self._highlight_items.append(shadow_item)
+
+            # Create main highlight path (bright, thinner)
+            main_path = QPainterPath()
+            main_path.moveTo(elem.start_point.x, elem.start_point.y)
+            main_path.lineTo(elem.end_point.x, elem.end_point.y)
+
+            main_item = QGraphicsPathItem(main_path)
+            main_item.setPen(QPen(highlight_color, 4.0, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+            main_item.setZValue(95)  # Above shadow
+            self.scene.addItem(main_item)
+            self._highlight_items.append(main_item)
+
+        # Highlight circles in the group
+        for circle in group.circles:
+            cx, cy = circle.center.x, circle.center.y
+            radius = circle.radius
+
+            # Shadow circle
+            shadow_ellipse = QGraphicsEllipseItem(
+                cx - radius - 4, cy - radius - 4,
+                (radius + 4) * 2, (radius + 4) * 2
+            )
+            shadow_ellipse.setPen(QPen(QColor(r, g, b, 100), 8.0))
+            shadow_ellipse.setBrush(QBrush(Qt.transparent))
+            shadow_ellipse.setZValue(90)
+            self.scene.addItem(shadow_ellipse)
+            self._highlight_items.append(shadow_ellipse)
+
+            # Main circle
+            main_ellipse = QGraphicsEllipseItem(
+                cx - radius, cy - radius,
+                radius * 2, radius * 2
+            )
+            main_ellipse.setPen(QPen(highlight_color, 3.0))
+            main_ellipse.setBrush(QBrush(QColor(r, g, b, 60)))
+            main_ellipse.setZValue(95)
+            self.scene.addItem(main_ellipse)
+            self._highlight_items.append(main_ellipse)
+
+    def clear_highlights(self):
+        """Remove all highlight items from the scene."""
+        for item in self._highlight_items:
+            try:
+                self.scene.removeItem(item)
+            except Exception:
+                pass
+        self._highlight_items = []
+
+    def set_clusters_visible(self, visible):
+        """Toggle cluster box visibility (requires redraw)."""
+        self._show_clusters = visible
+
+    def get_clusters_visible(self):
+        """Get current cluster visibility state."""
+        return self._show_clusters

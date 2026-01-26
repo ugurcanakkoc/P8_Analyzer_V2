@@ -1,0 +1,57 @@
+=== ANALIZ.DOCX TEXT CONTENT ===
+
+Page:11
+
+
+Pinler okunmamış.
+
+
+
+Cihaz doğru şekilde işaretlenmemiş. “S” pini okunmamış.
+
+
+Ayrılan hat tespit edilememiş.
+Page:12
+
+
+
+BMK okuma aşağısı için muhtemelen yapılamamış. Ayrı bir alan olarak işaretlenmiş.
+Aynı problem.
+
+Çok fazla gereksiz scan yapılmış. 
+Pinleri bulamamış.
+ Sol taraftaki hattı tespit edememiş. Cihazın pinlerini de tespit edememiş.
+Cihaz hatalı işaretlenmiş. Alt taraf ile bütün olması daha doğru olurdu.
+PE hattında yanlış bağlantılar tespit edilmiş. PE ==> -X1:PE, PE ==> -X1:PE (2), PE ==> -X4:PE doğru olan sadece bu.
+Page:13
+
+Cihazın pinleri tespit edilemediği için bağlantı raporu da hatalı.
+
+Page:14 
+
+Cihazı tespit edememiş.
+Cihazın pinleri tespit edilmiş ancak cihaz tespit edilememiş.
+*Sayfada bağlantı raporu oluşturulamadı.
+Page: 21
+
+
+PLC tespit edilemiyor.
+Pinler ve cihazlar doğru tespit edilemiyor.
+Page: 26
+
+Ayrılan bağlantılar tespit edilememiş.
+PLCler tespit edilememiş.
+Page:58
+Cihazları tek parça olarak alıyor.
+TESPİT EDİLEN GENEL HATALAR:
+- İncelediğim 10 sayfada bu cihazın pinleri tespit edilememiş.
+-Birbirinden uzak klemens grupları bulunmakta. Bu bölgelerde muhtemelen sağdakiler BMK’sız kalıyor. Burada aynı hizada olan (aynı Y seviyesinde olan) isimsiz klemens grubu, soldaki grubun görevini devralabilir.
+-Çoklu kablo tespitleri eksik.
+ -Bu cihazı her zaman iki parça olarak görüyor. Alt ve üst kısmı ayrı olarak tespit ediyor.
+-Birçok sayfada bağlantı tespitleri hatalı veya yapılamıyor. Yapılamayanlara örnek: Page 14, Page 15, Page 16, Page 21, Page 26, Page 43.
+
+- Ayrılan hatlarda hat takipleri kopuyor.
+
+
+-Uzun çizimleri olan cihazların tespitlerini yapamıyor.
+

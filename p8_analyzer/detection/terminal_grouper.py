@@ -32,7 +32,7 @@ class TerminalGrouper:
         self.search_direction = self.config.get('search_direction', 'left')
         self.search_radius = self.config.get('search_radius', 100.0)  # Increased from 25.0 to 100.0
         self.y_tolerance = self.config.get('y_tolerance', 15.0)  # For finding neighbors
-        self.label_pattern = self.config.get('label_pattern', r'^-?X.*') # Allow optional hyphen at start, just in case
+        self.label_pattern = self.config.get('label_pattern', r'^-?\d*X.*')  # Matches -X1, -1X11, X1, etc.
         self.neighbor_x_distance = self.config.get('neighbor_x_distance', 50.0)
 
     def group_terminals(self, terminals: List[Dict], text_engine: HybridTextEngine) -> List[Dict]:
@@ -89,11 +89,18 @@ class TerminalGrouper:
             
             # Create full label
             # User request: "Grupadı:Pin adı olacak"
-            # We enforce this format even if parts are missing (using 'UNK' or '?')
-            group = terminal.get('group_label') or "UNK"
-            pin = terminal.get('label') or "?"
-            
-            terminal['full_label'] = f"{group}:{pin}"
+            # If parts are missing, omit them (no UNK or ?)
+            group = terminal.get('group_label') or ""
+            pin = terminal.get('label') or ""
+
+            if group and pin:
+                terminal['full_label'] = f"{group}:{pin}"
+            elif group:
+                terminal['full_label'] = group
+            elif pin:
+                terminal['full_label'] = pin
+            else:
+                terminal['full_label'] = ""
             
             # Log the assignment
             logger.debug(f"Terminal ID assigned: {terminal['full_label']} at {terminal['center']}")

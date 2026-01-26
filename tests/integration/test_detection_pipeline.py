@@ -236,19 +236,20 @@ class TestPipelineErrorHandling:
         mock_read_engine.find_text.return_value = None
         labeled = reader.read_labels(detected, mock_read_engine)
 
-        # All should have '?' label
+        # All should have None label (unfound labels are None, not '?')
         for term in labeled:
-            assert term['label'] == '?'
+            assert term['label'] is None
 
         # Grouper should still work
         mock_group_engine = MagicMock()
         mock_group_engine.find_text.return_value = None
         grouped = grouper.group_terminals(labeled, mock_group_engine)
 
-        # All should have full_label with UNK group
+        # All should have full_label (empty string when both group and label are missing)
+        # Per user request: "If parts are missing, omit them (no UNK or ?)"
         for term in grouped:
-            assert 'UNK' in term['full_label']
-            assert '?' in term['full_label']
+            assert 'full_label' in term  # Field exists
+            # Empty string is valid when no label or group found
 
     def test_pipeline_handles_mixed_success_failure(
         self, detector, reader, grouper, sample_vector_analysis_with_terminals
@@ -266,7 +267,7 @@ class TestPipelineErrorHandling:
         labeled = reader.read_labels(detected, mock_read_engine)
 
         assert labeled[0]['label'] == '1'
-        assert labeled[1]['label'] == '?'
+        assert labeled[1]['label'] is None  # Unfound labels are None
 
         # Grouper: similar pattern
         mock_group_engine = MagicMock()

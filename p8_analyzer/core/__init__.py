@@ -41,6 +41,25 @@ from .svg_export import create_svg_from_analysis_result, export_to_png
 
 from .analyzer import analyze_page_vectors, export_analysis_results
 
+from .analysis_engine import AnalysisEngine, AnalysisOptions as EngineOptions
+
+from .session import (
+    WireAnnotationType,
+    WireAnnotation,
+    Terminal,
+    Pin,
+    Component,
+    Connection,
+    PageAnalysis,
+    SessionMetadata,
+    AnalysisSummary,
+    AnalysisSession,
+    create_session,
+    classify_annotation,
+    DIN_COLOR_CODES,
+    ANNOTATION_PATTERNS,
+)
+
 __all__ = [
     # Models
     "Point",
@@ -74,4 +93,22 @@ __all__ = [
     # Main
     "analyze_page_vectors",
     "export_analysis_results",
+    # Analysis Engine
+    "AnalysisEngine",
+    "EngineOptions",
+    # Session models
+    "WireAnnotationType",
+    "WireAnnotation",
+    "Terminal",
+    "Pin",
+    "Component",
+    "Connection",
+    "PageAnalysis",
+    "SessionMetadata",
+    "AnalysisSummary",
+    "AnalysisSession",
+    "create_session",
+    "classify_annotation",
+    "DIN_COLOR_CODES",
+    "ANNOTATION_PATTERNS",
 ]

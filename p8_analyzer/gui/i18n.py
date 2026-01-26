@@ -67,6 +67,9 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "msg_export_complete": "Exported {count} images to: {path}",
         "lbl_classification_status": "[{status}]",
 
+        # Cluster Boxes Toggle
+        "btn_cluster_boxes": "Device Boxes",
+
         # Schematic Filter
         "btn_schematic_filter": "Schematics Only",
         "msg_filter_scanning": "Scanning pages for schematics...",
@@ -136,6 +139,9 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "msg_export_complete": "{count} Bilder exportiert nach: {path}",
         "lbl_classification_status": "[{status}]",
 
+        # Cluster Boxes Toggle
+        "btn_cluster_boxes": "Geraeteboxen",
+
         # Schematic Filter
         "btn_schematic_filter": "Nur Schaltplaene",
         "msg_filter_scanning": "Seiten werden nach Schaltplaenen durchsucht...",
@@ -204,6 +210,9 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "msg_classification_stats": "Siniflandirildi: {schematic} sema, {non_schematic} sema degil, {total} toplam",
         "msg_export_complete": "{count} gorsel disari aktarildi: {path}",
         "lbl_classification_status": "[{status}]",
+
+        # Cluster Boxes Toggle
+        "btn_cluster_boxes": "Cihaz Kutulari",
 
         # Schematic Filter
         "btn_schematic_filter": "Sadece Semalar",

@@ -162,17 +162,67 @@ class HybridTextEngine:
         
     def _check_direction(self, ox, oy, tx, ty, direction: SearchDirection) -> bool:
         if direction == SearchDirection.ANY: return True
-        
+
         dx = tx - ox
         dy = ty - oy
         angle = math.degrees(math.atan2(dy, dx))
-        
-        # Açı kontrolleri (Y aşağı artıyor)
+
+        # Angle checks (Y increases downward in PDF coordinates)
         if direction == SearchDirection.RIGHT: return -45 <= angle <= 45
         elif direction == SearchDirection.BOTTOM: return 45 <= angle <= 135
         elif direction == SearchDirection.LEFT: return 135 <= angle <= 180 or -180 <= angle <= -135
         elif direction == SearchDirection.TOP: return -135 <= angle <= -45
         elif direction == SearchDirection.TOP_RIGHT: return -90 <= angle <= 0
         elif direction == SearchDirection.TOP_LEFT: return -180 <= angle <= -90
-        
+
         return False
+
+    def find_all_text_near(
+        self,
+        point: Tuple[float, float],
+        radius: float,
+        pattern: Optional[str] = None,
+        direction: SearchDirection = SearchDirection.ANY
+    ) -> List[TextElement]:
+        """
+        Find ALL text elements within radius of point.
+
+        Unlike find_text() which returns the best match, this returns
+        all matches sorted by distance. Used for wire annotation detection.
+
+        Args:
+            point: (x, y) center point in PDF coordinates
+            radius: Search radius in PDF units
+            pattern: Optional regex pattern to filter results
+            direction: Optional direction filter
+
+        Returns:
+            List of TextElement objects sorted by distance (closest first)
+        """
+        px, py = point[0], point[1]
+        matches = []
+
+        for elem in self.pdf_elements:
+            ex, ey = elem.center
+            dist = math.sqrt((ex - px)**2 + (ey - py)**2)
+
+            if dist > radius:
+                continue
+
+            # Check direction if specified
+            if not self._check_direction(px, py, ex, ey, direction):
+                continue
+
+            # Check pattern if specified
+            if pattern and not re.match(pattern, elem.text, re.IGNORECASE):
+                continue
+
+            matches.append((dist, elem))
+
+        # Sort by distance
+        matches.sort(key=lambda x: x[0])
+        return [elem for dist, elem in matches]
+
+    def get_all_text_elements(self) -> List[TextElement]:
+        """Return all loaded PDF text elements."""
+        return self.pdf_elements.copy()

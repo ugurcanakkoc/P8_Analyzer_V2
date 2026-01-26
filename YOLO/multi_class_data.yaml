@@ -25,3 +25,5 @@ names:
   5: Fuse
   6: Motor
   7: Transformer
+  8: Motor_Protection
+  9: Lighting

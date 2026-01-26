@@ -34,6 +34,8 @@ names:
   5: Fuse
   6: Motor
   7: Transformer
+  8: Motor_Protection
+  9: Lighting
 
 # Label format: OBB (8 normalized values per box)
 # Each line: class_id x1 y1 x2 y2 x3 y3 x4 y4

@@ -34,6 +34,12 @@ from .cluster_settings import (
     get_default_settings,
     reload_settings
 )
+from .wire_annotation_reader import (
+    WireAnnotationReader,
+    WireAnnotationConfig,
+    find_connected_paths,
+    create_cardinal_paths,
+)
 
 __all__ = [
     "TerminalDetector",
@@ -63,4 +69,9 @@ __all__ = [
     "ClusterSettings",
     "get_default_settings",
     "reload_settings",
+    # Wire annotation
+    "WireAnnotationReader",
+    "WireAnnotationConfig",
+    "find_connected_paths",
+    "create_cardinal_paths",
 ]

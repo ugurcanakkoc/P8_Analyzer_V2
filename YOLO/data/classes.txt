@@ -6,5 +6,5 @@ Circuit_Breaker
 Fuse
 Motor
 Transformer
-motor-koruma
-aydinlatma
+Motor_Protection
+Lighting

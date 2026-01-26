@@ -68,7 +68,7 @@ class TestTextEngineWithReader:
         # Reader is configured for top_right, should not find LEFT text
         result = reader.read_labels(terminals, engine)
 
-        assert result[0]['label'] == '?'  # Not found because wrong direction
+        assert result[0]['label'] is None  # Not found because wrong direction
 
 
 class TestTextEngineWithGrouper:

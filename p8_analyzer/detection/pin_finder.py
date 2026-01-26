@@ -23,15 +23,15 @@ class PinFinder:
         pins = []
         # Grubun tüm noktalarını (çizgi uçları) al
         all_points = self._get_all_group_points(group)
-        
+
         for point in all_points:
-            # Sadece bir kutunun içindeki noktalara bak (Gürültü önleme)
+            # Find which box contains this wire endpoint
             found_box = None
             for box in boxes:
                 if box.contains_point(point):
                     found_box = box
                     break
-            
+
             if found_box:
                 # TextEngine ile akıllı arama yap (PDF + OCR)
                 text_element = self._find_label_element_near_point(point, text_engine)

@@ -74,11 +74,11 @@ class TerminalReader:
                 terminal['label_source'] = result.source  # Track if from PDF or OCR
                 logger.debug(f"Terminal at {center} -> Label: {result.text} (source: {result.source})")
             else:
-                terminal['label'] = '?'
+                terminal['label'] = None
                 terminal['label_source'] = None
                 logger.debug(f"Terminal at {center} -> No label found")
-        
-        labeled_count = sum(1 for t in terminals if t['label'] != '?')
+
+        labeled_count = sum(1 for t in terminals if t.get('label'))
         logger.info(f"Labeled {labeled_count}/{len(terminals)} terminals")
         
         return terminals

@@ -54,8 +54,8 @@ class TestAnalysisConfig:
         config = AnalysisConfig()
         assert config.target_angle == 90.0
         assert config.angle_tolerance == 1.0
-        assert config.min_radius is None or hasattr(config, 'min_radius') is False  # May not exist
         assert config.min_line_length == 10.0
+        assert config.extension_length == 15.0
 
     def test_custom_config_values(self):
         """Test custom configuration values."""
@@ -287,17 +287,17 @@ class TestExportOptions:
         assert options.create_svg is True
         assert options.create_png is True
         assert options.create_json is True
-        assert options.png_scale_factor == 4.0
+        assert options.png_quality == 95
 
     def test_custom_export_options(self):
         """Test custom export options."""
         options = ExportOptions(
             create_svg=False,
-            png_scale_factor=2.0,
+            png_dpi=300,
             output_prefix="custom"
         )
         assert options.create_svg is False
-        assert options.png_scale_factor == 2.0
+        assert options.png_dpi == 300
         assert options.output_prefix == "custom"
 
 

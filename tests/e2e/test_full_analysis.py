@@ -251,7 +251,12 @@ class TestE2EAnalysisPipeline:
         # Create mock component box
         box = Mock()
         box.id = 'BOX-1'
-        box.contains_point = lambda p: 80 <= getattr(p, 'x', p[0]) <= 220 and 80 <= getattr(p, 'y', p[1]) <= 120
+        # Handle both SimplePoint objects (with .x, .y) and tuples
+        def _contains_point(p):
+            x = getattr(p, 'x', None) if hasattr(p, 'x') else p[0]
+            y = getattr(p, 'y', None) if hasattr(p, 'y') else p[1]
+            return 80 <= x <= 220 and 80 <= y <= 120
+        box.contains_point = _contains_point
 
         # Create text engine with pin labels
         text_engine = HybridTextEngine()
@@ -370,14 +375,16 @@ class TestE2EErrorRecovery:
         mock_engine.find_text.return_value = None
         labeled = reader.read_labels(detected, mock_engine)
 
-        assert labeled[0]['label'] == '?'
+        # Unfound labels are None (not '?') per actual implementation
+        assert labeled[0]['label'] is None
 
         # Group with no group found
         grouper = TerminalGrouper()
         grouped = grouper.group_terminals(labeled, mock_engine)
 
-        # Should still produce output with UNK group
-        assert grouped[0]['full_label'] == 'UNK:?'
+        # Per user request: "If parts are missing, omit them (no UNK or ?)"
+        # Empty string when both group and label are missing
+        assert grouped[0]['full_label'] == ''
 
 
 class TestE2EPerformance:

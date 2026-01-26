@@ -291,6 +291,9 @@ class VectorAnalysisResult(BaseModel):
     cluster_circle_pins: Optional[List[Any]] = None
     cluster_line_ends: Optional[List[Any]] = None
 
+    # PageAnalysis from AnalysisEngine (for GUI connection reporting)
+    page_analysis: Optional[Any] = None
+
     # Statistiken und Metadaten
     statistics: AnalysisStatistics
     config: AnalysisConfig

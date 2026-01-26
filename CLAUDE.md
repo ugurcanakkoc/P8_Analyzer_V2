@@ -121,30 +121,57 @@ Before running any Python command, verify you're using venv:
 ## Development Workflow
 
 ### Running the Application
+
+**GUI Mode:**
 ```bash
 ./venv/Scripts/python.exe start_gui.py
+```
+
+**CLI Mode (for headless analysis):**
+```bash
+# Analyze single page with wire annotations
+./venv/Scripts/python.exe analyze_pdf.py analyze data/ornek.pdf -p 11 --include-annotations
+
+# Analyze multiple pages, save as JSON
+./venv/Scripts/python.exe analyze_pdf.py analyze data/ornek.pdf -p 11-14 --include-annotations -f json -o results.json
+
+# CSV output for spreadsheet import
+./venv/Scripts/python.exe analyze_pdf.py analyze data/ornek.pdf -p 11 --include-annotations -f csv -o terminals.csv
+
+# Show PDF info
+./venv/Scripts/python.exe analyze_pdf.py info data/ornek.pdf
+
+# Full help
+./venv/Scripts/python.exe analyze_pdf.py --help
 ```
 
 ### Project Structure
 ```
 P8_Analyzer_V2/
-├── start_gui.py              # Entry point
+├── start_gui.py              # GUI entry point
+├── analyze_pdf.py            # CLI entry point
 ├── p8_analyzer/              # Main package (modern structure)
 │   ├── __init__.py           # Package exports
 │   ├── core/                 # Vector analysis (UVP integrated)
 │   │   ├── models.py         # Pydantic data models
 │   │   ├── analyzer.py       # Page vector analysis
+│   │   ├── session.py        # AnalysisSession data structure
 │   │   └── export.py         # SVG/PNG export
 │   ├── detection/            # Terminal & component detection
 │   │   ├── terminal_detector.py
 │   │   ├── terminal_reader.py
 │   │   ├── terminal_grouper.py
+│   │   ├── wire_annotation_reader.py  # Wire annotation capture
 │   │   ├── pin_finder.py
 │   │   └── busbar_finder.py
 │   ├── text/                 # Text extraction
 │   │   └── hybrid_engine.py  # PDF + OCR text engine
 │   ├── circuit/              # Connection analysis
 │   │   └── connection_logic.py
+│   ├── cli/                  # Command-line interface
+│   │   ├── analyzer.py       # PDFAnalyzer class
+│   │   ├── output.py         # JSON/CSV/Text formatters
+│   │   └── main.py           # CLI entry point
 │   └── gui/                  # PyQt5 GUI components
 │       ├── main_window.py
 │       ├── viewer.py

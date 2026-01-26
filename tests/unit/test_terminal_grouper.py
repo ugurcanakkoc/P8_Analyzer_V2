@@ -75,7 +75,7 @@ class TestTerminalGrouper:
         assert result[0]['full_label'] == '-X1:1'
 
     def test_group_terminals_unknown_group(self, grouper):
-        """Test full_label format when no group found."""
+        """Test full_label format when no group found - just shows pin label."""
         mock_engine = MagicMock()
         mock_engine.find_text.return_value = None
 
@@ -86,10 +86,11 @@ class TestTerminalGrouper:
         result = grouper.group_terminals(terminals, mock_engine)
 
         assert result[0]['group_label'] is None
-        assert result[0]['full_label'] == 'UNK:1'
+        # No UNK prefix - just the pin label
+        assert result[0]['full_label'] == '1'
 
     def test_group_terminals_unknown_label(self, grouper):
-        """Test full_label format when no pin label."""
+        """Test full_label format when no pin label - just shows group."""
         mock_engine = MagicMock()
 
         mock_result = Mock()
@@ -103,7 +104,8 @@ class TestTerminalGrouper:
 
         result = grouper.group_terminals(terminals, mock_engine)
 
-        assert result[0]['full_label'] == '-X1:?'
+        # No :? suffix - just the group label
+        assert result[0]['full_label'] == '-X1'
 
     def test_group_terminals_sorts_by_y_then_x(self, grouper):
         """Test that terminals are sorted by Y coordinate, then X."""

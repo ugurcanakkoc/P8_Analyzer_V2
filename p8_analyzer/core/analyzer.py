@@ -88,7 +88,7 @@ def analyze_page_vectors(drawings: List[Dict[str, Any]],
     # 5. Kategorisiere Gruppen
     print("Phase 3: Gruppenkategorisierung...")
     structural_groups, text_like_groups, single_elements = categorize_groups(
-        continuous_groups, all_circles, config
+        continuous_groups, all_circles, config, broken_connections_dict
     )
     
     # 6. Alle Pfadelemente sammeln
@@ -247,7 +247,7 @@ def create_analysis_result_from_legacy_data(drawings: List[Dict[str, Any]],
     
     # Analysiere Gruppen und kategorisiere sie
     structural_groups, text_like_groups, single_elements = categorize_groups(
-        continuous_groups, pydantic_circles, config
+        continuous_groups, pydantic_circles, config, broken_connections
     )
     
     # Sammle alle Pfadelemente

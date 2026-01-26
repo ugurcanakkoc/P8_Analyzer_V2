@@ -439,7 +439,7 @@ class TestFindTextOnlyOcr:
 
     def test_find_text_only_ocr_no_easyocr(self):
         """Test find_text_only_ocr handles missing EasyOCR."""
-        with patch('src.text_engine.EASYOCR_AVAILABLE', False):
+        with patch('p8_analyzer.text.hybrid_engine.EASYOCR_AVAILABLE', False):
             engine = HybridTextEngine()
             engine.current_page = MagicMock()
             profile = SearchProfile()

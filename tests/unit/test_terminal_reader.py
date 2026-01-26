@@ -83,16 +83,16 @@ class TestTerminalReader:
         assert result[1]['label_source'] == 'pdf'
 
     def test_read_labels_handles_not_found(self, reader, sample_terminals_unlabeled):
-        """Test reading labels when text not found."""
+        """Test reading labels when text not found - returns None instead of '?'."""
         mock_engine = MagicMock()
         mock_engine.find_text.return_value = None
 
         result = reader.read_labels(sample_terminals_unlabeled, mock_engine)
 
         assert len(result) == 2
-        assert result[0]['label'] == '?'
+        assert result[0]['label'] is None
         assert result[0]['label_source'] is None
-        assert result[1]['label'] == '?'
+        assert result[1]['label'] is None
 
     def test_read_labels_mixed_found_not_found(self, reader, sample_terminals_unlabeled):
         """Test reading labels with some found and some not."""
@@ -109,7 +109,7 @@ class TestTerminalReader:
 
         assert result[0]['label'] == 'PE'
         assert result[0]['label_source'] == 'ocr'
-        assert result[1]['label'] == '?'
+        assert result[1]['label'] is None
         assert result[1]['label_source'] is None
 
     def test_read_labels_uses_correct_search_profile(self, reader):
@@ -229,5 +229,6 @@ class TestTerminalReaderIntegration:
 
         result = reader.read_labels(terminals, mock_engine)
 
-        labeled = sum(1 for t in result if t['label'] != '?')
+        # Count non-None labels (not '?' since we now use None for unknown)
+        labeled = sum(1 for t in result if t['label'] is not None)
         assert labeled == 2

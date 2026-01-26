@@ -2,6 +2,8 @@
 
 A professional PDF-based electrical schematic analysis tool for P8-format drawings. Automatically detects terminals, reads labels, and generates connection reports (netlists).
 
+> **See [OPEN_TASKS.md](OPEN_TASKS.md) for pending tasks and known issues.**
+
 ## Features
 
 - **Vector Analysis**: Parse PDF vector data to detect structural elements (lines, circles, paths)
@@ -9,8 +11,10 @@ A professional PDF-based electrical schematic analysis tool for P8-format drawin
 - **Hybrid Text Recognition**: Combine PDF text layer with OCR fallback for accurate label reading
 - **Smart Grouping**: Assign group labels (e.g., -X1, -X2) using inheritance algorithm
 - **Pin Detection**: Find pin labels at wire endpoints inside component boxes
+- **Wire Annotation Capture**: Detect and read wire annotation labels from schematics
 - **Connection Reports**: Generate netlists showing terminal-to-component connectivity
 - **Interactive GUI**: Navigate PDFs, draw component boxes, view analysis results
+- **CLI Support**: Headless analysis for batch processing and automation
 
 ## Screenshots
 
@@ -27,33 +31,67 @@ The application provides:
 - Python 3.8+
 - Windows (tested), Linux/macOS (should work)
 
-### Dependencies
-
-```bash
-pip install PyQt5 pymupdf pydantic pillow numpy
-```
-
-Optional (for OCR fallback):
-```bash
-pip install easyocr
-```
-
-Optional (for YOLO component detection):
-```bash
-pip install ultralytics
-```
-
-### Clone and Run
+### Setup with Virtual Environment (Recommended)
 
 ```bash
 git clone https://github.com/your-repo/P8_Analyzer_V2.git
 cd P8_Analyzer_V2
-python start_gui.py
+
+# Create virtual environment
+python -m venv venv
+
+# Activate (Windows)
+.\venv\Scripts\activate
+
+# Install dependencies
+pip install -r requirements.txt
 ```
+
+### Dependencies
+
+Core dependencies (in requirements.txt):
+- PyQt5 - GUI framework
+- pymupdf - PDF processing
+- pydantic - Data models
+- pillow - Image processing
+- numpy - Numerical operations
+
+Optional:
+- easyocr - OCR fallback
+- ultralytics - YOLO component detection
 
 ## Usage
 
-### Basic Workflow
+### GUI Mode
+
+```bash
+# Windows
+.\venv\Scripts\python.exe start_gui.py
+
+# Linux/macOS
+./venv/bin/python start_gui.py
+```
+
+### CLI Mode
+
+```bash
+# Analyze single page with wire annotations
+.\venv\Scripts\python.exe analyze_pdf.py analyze data/ornek.pdf -p 11 --include-annotations
+
+# Analyze multiple pages, save as JSON
+.\venv\Scripts\python.exe analyze_pdf.py analyze data/ornek.pdf -p 11-14 --include-annotations -f json -o results.json
+
+# CSV output for spreadsheet import
+.\venv\Scripts\python.exe analyze_pdf.py analyze data/ornek.pdf -p 11 --include-annotations -f csv -o terminals.csv
+
+# Show PDF info
+.\venv\Scripts\python.exe analyze_pdf.py info data/ornek.pdf
+
+# Full help
+.\venv\Scripts\python.exe analyze_pdf.py --help
+```
+
+### Basic GUI Workflow
 
 1. **Open PDF**: Click "PDF Ac" or let the app auto-load `data/ornek.pdf`
 2. **Navigate**: Use "Onceki/Sonraki" buttons to browse pages
@@ -66,6 +104,7 @@ python start_gui.py
 The analysis produces:
 - **Terminals**: List of detected terminal blocks with labels
 - **Groups**: Terminal groupings (-X1:1, -X1:2, -X2:PE, etc.)
+- **Wire Annotations**: Detected wire labels from schematics
 - **Connections**: Netlist showing which terminals connect to which components
 
 Example output:
@@ -84,28 +123,52 @@ NET-002 Line:
 
 ```
 P8_Analyzer_V2/
-├── start_gui.py              # Application entry point
-├── gui/                      # PyQt5 GUI components
-│   ├── main_window.py        # Main application window
-│   ├── viewer.py             # Interactive PDF viewer
-│   ├── worker.py             # Background analysis thread
-│   ├── circuit_logic.py      # Connection detection logic
-│   └── ocr_worker.py         # OCR comparison worker
-├── src/                      # Core analysis modules
-│   ├── models.py             # Pydantic data models
-│   ├── terminal_detector.py  # Terminal circle detection
-│   ├── terminal_reader.py    # Label reading with text engine
-│   ├── terminal_grouper.py   # Group assignment algorithm
-│   ├── pin_finder.py         # Pin detection in boxes
-│   └── text_engine.py        # Hybrid PDF/OCR text engine
+├── start_gui.py              # GUI entry point
+├── analyze_pdf.py            # CLI entry point
+├── p8_analyzer/              # Main package
+│   ├── __init__.py           # Package exports
+│   ├── core/                 # Core analysis modules
+│   │   ├── models.py         # Pydantic data models
+│   │   ├── analyzer.py       # Page vector analysis
+│   │   ├── analysis_engine.py # Unified analysis engine
+│   │   ├── session.py        # Analysis session management
+│   │   └── export.py         # SVG/PNG export
+│   ├── detection/            # Detection modules
+│   │   ├── terminal_detector.py
+│   │   ├── terminal_reader.py
+│   │   ├── terminal_grouper.py
+│   │   ├── wire_annotation_reader.py
+│   │   ├── pin_finder.py
+│   │   ├── busbar_finder.py
+│   │   └── cluster_detector.py
+│   ├── text/                 # Text extraction
+│   │   └── hybrid_engine.py  # PDF + OCR text engine
+│   ├── circuit/              # Connection analysis
+│   │   └── connection_logic.py
+│   ├── cli/                  # CLI module
+│   │   ├── analyzer.py       # PDFAnalyzer class
+│   │   ├── output.py         # JSON/CSV/Text formatters
+│   │   └── main.py           # CLI entry point
+│   └── gui/                  # PyQt5 GUI components
+│       ├── main_window.py
+│       ├── viewer.py
+│       └── worker.py
 ├── YOLO/                     # ML component detection
 │   ├── scripts/              # Training scripts
-│   ├── images/               # Training images
-│   ├── labels/               # Annotation labels
+│   ├── data/                 # Training data
 │   └── best.pt               # Trained model weights
 ├── data/                     # Sample files
 │   └── ornek.pdf             # Example P8 schematic
-└── tests/                    # Test suite
+├── tests/                    # Test suite
+│   ├── unit/                 # Unit tests
+│   ├── integration/          # Integration tests
+│   └── e2e/                  # End-to-end tests
+├── PRP/                      # Project requirements
+│   ├── REQUIREMENTS.md       # Full requirements spec
+│   ├── requirements/         # Additional docs
+│   └── feedback/             # Customer feedback
+├── OPEN_TASKS.md             # Pending tasks list
+└── requirements.txt          # Python dependencies
 ```
 
 ## Processing Pipeline
@@ -155,7 +218,14 @@ P8_Analyzer_V2/
                               │
                               ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│  6. Pin Finding (PinFinder)                                      │
+│  6. Wire Annotation Capture (WireAnnotationReader)               │
+│     - Find wire annotation labels near structural groups         │
+│     - Associate annotations with wire segments                   │
+└─────────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────────┐
+│  7. Pin Finding (PinFinder)                                      │
 │     - Find wire endpoints inside component boxes                 │
 │     - Read pin labels near endpoints                             │
 │     - Associate pins with boxes                                  │
@@ -163,7 +233,7 @@ P8_Analyzer_V2/
                               │
                               ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│  7. Connection Analysis (circuit_logic)                          │
+│  8. Connection Analysis (AnalysisEngine)                         │
 │     - Match structural groups to terminals and boxes             │
 │     - Build netlist from intersections                           │
 │     - Generate connection report                                 │
@@ -173,6 +243,7 @@ P8_Analyzer_V2/
 ┌─────────────────────────────────────────────────────────────────┐
 │                         OUTPUT                                   │
 │  - Terminal list with labels and groups                          │
+│  - Wire annotations                                              │
 │  - Connection report (netlist)                                   │
 │  - Visual overlay on PDF                                         │
 └─────────────────────────────────────────────────────────────────┘
@@ -207,31 +278,49 @@ P8_Analyzer_V2/
 
 ```bash
 # Run all tests
-pytest tests/ -v
+.\venv\Scripts\python.exe -m pytest tests/ -v
 
-# Run with coverage
-pytest tests/ --cov=src --cov=gui --cov-report=html
+# Unit tests only
+.\venv\Scripts\python.exe -m pytest tests/unit/ -v
+
+# Integration tests
+.\venv\Scripts\python.exe -m pytest tests/integration/ -v
+
+# E2E tests
+.\venv\Scripts\python.exe -m pytest tests/e2e/ -v
+
+# With coverage
+.\venv\Scripts\python.exe -m pytest tests/ --cov=p8_analyzer --cov-report=html
 ```
 
 ## Development
 
 ### Adding New Terminal Types
 
-1. Modify `src/terminal_detector.py`
+1. Modify `p8_analyzer/detection/terminal_detector.py`
 2. Update the `_is_terminal()` method with new criteria
 3. Add tests in `tests/unit/test_terminal_detector.py`
 
 ### Improving OCR Accuracy
 
-1. Adjust `SearchProfile` parameters in `src/text_engine.py`
+1. Adjust `SearchProfile` parameters in `p8_analyzer/text/hybrid_engine.py`
 2. Fine-tune regex patterns for label validation
 3. Test with the OCR comparison tool in the GUI
 
 ### Training YOLO Model
 
-1. Add annotated images to `YOLO/images/` and `YOLO/labels/`
-2. Update `YOLO/multi_class_data.yaml` with class definitions
-3. Run training: `python YOLO/scripts/train_multi_class.py`
+1. Add annotated images to `YOLO/data/images/` and `YOLO/data/labels/`
+2. Update `YOLO/data/dataset.yaml` with class definitions
+3. Run training: `.\venv\Scripts\python.exe YOLO/scripts/train_label_detector.py`
+
+See `YOLO/scripts/` for additional training utilities.
+
+## Open Tasks
+
+See [OPEN_TASKS.md](OPEN_TASKS.md) for:
+- Pending development tasks
+- Known issues and limitations
+- Customer feedback integration status
 
 ## License
 

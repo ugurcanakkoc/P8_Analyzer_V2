@@ -2,6 +2,8 @@
 
 P8 formatindaki elektrik semalarini analiz eden profesyonel bir PDF tabanli arac. Otomatik olarak terminalleri (klemensler) tespit eder, etiketleri okur ve baglanti raporlari (netlist) olusturur.
 
+> **Bekleyen gorevler ve bilinen sorunlar icin [OPEN_TASKS.md](OPEN_TASKS.md) dosyasina bakin.**
+
 ## Ozellikler
 
 - **Vektor Analizi**: PDF vektor verilerini ayristirarak yapisal elemanlari (cizgiler, daireler, yollar) tespit eder
@@ -9,8 +11,10 @@ P8 formatindaki elektrik semalarini analiz eden profesyonel bir PDF tabanli arac
 - **Hibrit Metin Tanima**: Dogru etiket okuma icin PDF metin katmanini OCR yedegi ile birlestirir
 - **Akilli Gruplama**: Miras algoritmasiyla grup etiketleri (-X1, -X2 vb.) atar
 - **Pin Tespiti**: Komponent kutulari icindeki kablo uclarinda pin etiketlerini bulur
+- **Kablo Anotasyon Yakalama**: Semalardan kablo anotasyon etiketlerini tespit eder ve okur
 - **Baglanti Raporlari**: Terminal-komponent baglantilarini gosteren netlist olusturur
 - **Interaktif Arayuz**: PDF'lerde gezinin, komponent kutulari cizin, analiz sonuclarini gorun
+- **CLI Destegi**: Toplu isleme ve otomasyon icin arabirim
 
 ## Ekran Goruntuleri
 
@@ -27,33 +31,67 @@ Uygulama sunlar saglar:
 - Python 3.8+
 - Windows (test edildi), Linux/macOS (calismali)
 
-### Bagimliliklar
-
-```bash
-pip install PyQt5 pymupdf pydantic pillow numpy
-```
-
-Opsiyonel (OCR yedegi icin):
-```bash
-pip install easyocr
-```
-
-Opsiyonel (YOLO komponent tespiti icin):
-```bash
-pip install ultralytics
-```
-
-### Klonlama ve Calistirma
+### Sanal Ortam ile Kurulum (Onerilen)
 
 ```bash
 git clone https://github.com/your-repo/P8_Analyzer_V2.git
 cd P8_Analyzer_V2
-python start_gui.py
+
+# Sanal ortam olustur
+python -m venv venv
+
+# Aktiflesitir (Windows)
+.\venv\Scripts\activate
+
+# Bagimliliklari yukle
+pip install -r requirements.txt
 ```
+
+### Bagimliliklar
+
+Temel bagimliliklar (requirements.txt icinde):
+- PyQt5 - GUI cercevesi
+- pymupdf - PDF isleme
+- pydantic - Veri modelleri
+- pillow - Goruntu isleme
+- numpy - Sayisal islemler
+
+Opsiyonel:
+- easyocr - OCR yedegi
+- ultralytics - YOLO komponent tespiti
 
 ## Kullanim
 
-### Temel Is Akisi
+### GUI Modu
+
+```bash
+# Windows
+.\venv\Scripts\python.exe start_gui.py
+
+# Linux/macOS
+./venv/bin/python start_gui.py
+```
+
+### CLI Modu
+
+```bash
+# Kablo anotasyonlari ile tek sayfa analizi
+.\venv\Scripts\python.exe analyze_pdf.py analyze data/ornek.pdf -p 11 --include-annotations
+
+# Birden fazla sayfa analizi, JSON olarak kaydet
+.\venv\Scripts\python.exe analyze_pdf.py analyze data/ornek.pdf -p 11-14 --include-annotations -f json -o results.json
+
+# Tablo icin CSV ciktisi
+.\venv\Scripts\python.exe analyze_pdf.py analyze data/ornek.pdf -p 11 --include-annotations -f csv -o terminals.csv
+
+# PDF bilgilerini goster
+.\venv\Scripts\python.exe analyze_pdf.py info data/ornek.pdf
+
+# Tam yardim
+.\venv\Scripts\python.exe analyze_pdf.py --help
+```
+
+### Temel GUI Is Akisi
 
 1. **PDF Ac**: "PDF Ac" butonuna tiklayin veya uygulamanin `data/ornek.pdf` dosyasini otomatik yuklemesini bekleyin
 2. **Gezinme**: Sayfalar arasinda gezinmek icin "Onceki/Sonraki" butonlarini kullanin
@@ -66,6 +104,7 @@ python start_gui.py
 Analiz sunlari uretir:
 - **Terminaller**: Etiketli tespit edilmis terminal bloklari listesi
 - **Gruplar**: Terminal gruplari (-X1:1, -X1:2, -X2:PE vb.)
+- **Kablo Anotasyonlari**: Semalardan tespit edilen kablo etiketleri
 - **Baglantilar**: Hangi terminallerin hangi komponentlere baglandigini gosteren netlist
 
 Ornek cikti:
@@ -84,28 +123,52 @@ NET-002 Hatti:
 
 ```
 P8_Analyzer_V2/
-├── start_gui.py              # Uygulama giris noktasi
-├── gui/                      # PyQt5 arayuz bilesenleri
-│   ├── main_window.py        # Ana uygulama penceresi
-│   ├── viewer.py             # Interaktif PDF goruntuleyici
-│   ├── worker.py             # Arka plan analiz thread'i
-│   ├── circuit_logic.py      # Baglanti tespit mantigi
-│   └── ocr_worker.py         # OCR karsilastirma worker'i
-├── src/                      # Cekirdek analiz modulleri
-│   ├── models.py             # Pydantic veri modelleri
-│   ├── terminal_detector.py  # Terminal daire tespiti
-│   ├── terminal_reader.py    # Metin motoru ile etiket okuma
-│   ├── terminal_grouper.py   # Grup atama algoritmasi
-│   ├── pin_finder.py         # Kutularda pin tespiti
-│   └── text_engine.py        # Hibrit PDF/OCR metin motoru
+├── start_gui.py              # GUI giris noktasi
+├── analyze_pdf.py            # CLI giris noktasi
+├── p8_analyzer/              # Ana paket
+│   ├── __init__.py           # Paket disa aktarimlari
+│   ├── core/                 # Cekirdek analiz modulleri
+│   │   ├── models.py         # Pydantic veri modelleri
+│   │   ├── analyzer.py       # Sayfa vektor analizi
+│   │   ├── analysis_engine.py # Birlesik analiz motoru
+│   │   ├── session.py        # Analiz oturum yonetimi
+│   │   └── export.py         # SVG/PNG disa aktarim
+│   ├── detection/            # Tespit modulleri
+│   │   ├── terminal_detector.py
+│   │   ├── terminal_reader.py
+│   │   ├── terminal_grouper.py
+│   │   ├── wire_annotation_reader.py
+│   │   ├── pin_finder.py
+│   │   ├── busbar_finder.py
+│   │   └── cluster_detector.py
+│   ├── text/                 # Metin cikarma
+│   │   └── hybrid_engine.py  # PDF + OCR metin motoru
+│   ├── circuit/              # Baglanti analizi
+│   │   └── connection_logic.py
+│   ├── cli/                  # CLI modulu
+│   │   ├── analyzer.py       # PDFAnalyzer sinifi
+│   │   ├── output.py         # JSON/CSV/Text formatlayicilar
+│   │   └── main.py           # CLI giris noktasi
+│   └── gui/                  # PyQt5 GUI bilesenleri
+│       ├── main_window.py
+│       ├── viewer.py
+│       └── worker.py
 ├── YOLO/                     # ML komponent tespiti
 │   ├── scripts/              # Egitim scriptleri
-│   ├── images/               # Egitim goruntuleri
-│   ├── labels/               # Anotasyon etiketleri
+│   ├── data/                 # Egitim verisi
 │   └── best.pt               # Egitilmis model agirliklari
 ├── data/                     # Ornek dosyalar
 │   └── ornek.pdf             # Ornek P8 semasi
-└── tests/                    # Test paketi
+├── tests/                    # Test paketi
+│   ├── unit/                 # Birim testleri
+│   ├── integration/          # Entegrasyon testleri
+│   └── e2e/                  # Uctan uca testler
+├── PRP/                      # Proje gereksinimleri
+│   ├── REQUIREMENTS.md       # Tam gereksinim dokumani
+│   ├── requirements/         # Ek dokumanlar
+│   └── feedback/             # Musteri geri bildirimi
+├── OPEN_TASKS.md             # Bekleyen gorevler listesi
+└── requirements.txt          # Python bagimliliklari
 ```
 
 ## Isleme Hatti
@@ -155,7 +218,14 @@ P8_Analyzer_V2/
                               │
                               ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│  6. Pin Bulma (PinFinder)                                        │
+│  6. Kablo Anotasyon Yakalama (WireAnnotationReader)              │
+│     - Yapisal gruplar yakininda kablo anotasyon etiketlerini bul │
+│     - Anotasyonlari kablo segmentleri ile iliskilendir           │
+└─────────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────────┐
+│  7. Pin Bulma (PinFinder)                                        │
 │     - Komponent kutulari icindeki kablo uclarini bul             │
 │     - Uc noktalar yakininda pin etiketlerini oku                 │
 │     - Pinleri kutularla iliskilendir                             │
@@ -163,7 +233,7 @@ P8_Analyzer_V2/
                               │
                               ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│  7. Baglanti Analizi (circuit_logic)                             │
+│  8. Baglanti Analizi (AnalysisEngine)                            │
 │     - Yapisal gruplari terminallerle ve kutularla esle           │
 │     - Kesisimlerden netlist olustur                              │
 │     - Baglanti raporu uret                                       │
@@ -173,6 +243,7 @@ P8_Analyzer_V2/
 ┌─────────────────────────────────────────────────────────────────┐
 │                         CIKTI                                    │
 │  - Etiketli ve gruplu terminal listesi                           │
+│  - Kablo anotasyonlari                                           │
 │  - Baglanti raporu (netlist)                                     │
 │  - PDF uzerinde gorsel kaplama                                   │
 └─────────────────────────────────────────────────────────────────┘
@@ -207,31 +278,49 @@ P8_Analyzer_V2/
 
 ```bash
 # Tum testleri calistir
-pytest tests/ -v
+.\venv\Scripts\python.exe -m pytest tests/ -v
+
+# Sadece birim testleri
+.\venv\Scripts\python.exe -m pytest tests/unit/ -v
+
+# Entegrasyon testleri
+.\venv\Scripts\python.exe -m pytest tests/integration/ -v
+
+# Uctan uca testler
+.\venv\Scripts\python.exe -m pytest tests/e2e/ -v
 
 # Kapsam raporu ile calistir
-pytest tests/ --cov=src --cov=gui --cov-report=html
+.\venv\Scripts\python.exe -m pytest tests/ --cov=p8_analyzer --cov-report=html
 ```
 
 ## Gelistirme
 
 ### Yeni Terminal Turleri Ekleme
 
-1. `src/terminal_detector.py` dosyasini duzenleyin
+1. `p8_analyzer/detection/terminal_detector.py` dosyasini duzenleyin
 2. `_is_terminal()` metodunu yeni kriterlerle guncelleyin
 3. `tests/unit/test_terminal_detector.py` dosyasina testler ekleyin
 
 ### OCR Dogrulugunu Artirma
 
-1. `src/text_engine.py` dosyasindaki `SearchProfile` parametrelerini ayarlayin
+1. `p8_analyzer/text/hybrid_engine.py` dosyasindaki `SearchProfile` parametrelerini ayarlayin
 2. Etiket dogrulama icin regex desenlerini ince ayarlayin
 3. Arayuzdeki OCR karsilastirma araci ile test edin
 
 ### YOLO Modeli Egitme
 
-1. Anotasyonlu goruntuleri `YOLO/images/` ve `YOLO/labels/` klasorlerine ekleyin
-2. `YOLO/multi_class_data.yaml` dosyasini sinif tanimlariyla guncelleyin
-3. Egitimi baslatin: `python YOLO/scripts/train_multi_class.py`
+1. Anotasyonlu goruntuleri `YOLO/data/images/` ve `YOLO/data/labels/` klasorlerine ekleyin
+2. `YOLO/data/dataset.yaml` dosyasini sinif tanimlariyla guncelleyin
+3. Egitimi baslatin: `.\venv\Scripts\python.exe YOLO/scripts/train_label_detector.py`
+
+Ek egitim araclari icin `YOLO/scripts/` klasorune bakin.
+
+## Acik Gorevler
+
+[OPEN_TASKS.md](OPEN_TASKS.md) dosyasinda sunlar bulunur:
+- Bekleyen gelistirme gorevleri
+- Bilinen sorunlar ve sinirlamalar
+- Musteri geri bildirimi entegrasyon durumu
 
 ## Lisans
 
