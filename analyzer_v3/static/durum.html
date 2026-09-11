@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Pano bağlantı çıkarımı — durum</title>
+<link rel="stylesheet" href="/durum.css">
+</head>
+<body>
+<header>
+  <div class="brand">UVP <span>PANO BAĞLANTI ÇIKARIMI</span></div>
+  <div class="head-right">
+    <label class="sr" for="page">Sayfa</label>
+    <select id="page"></select>
+    <a class="link" href="/ayrinti">Ayrıntılı ekran →</a>
+  </div>
+</header>
+
+<div id="error" hidden></div>
+
+<main>
+  <section class="drawing-card">
+    <div class="card-head">
+      <div>
+        <h2 id="page-label">Yükleniyor…</h2>
+        <p id="headline" class="muted">…</p>
+      </div>
+      <div class="tools">
+        <button id="fit" type="button">Tam sayfa</button>
+        <button id="zoom-in" type="button" aria-label="Yakınlaştır">+</button>
+        <button id="zoom-out" type="button" aria-label="Uzaklaştır">−</button>
+      </div>
+    </div>
+    <div class="canvas">
+      <svg id="svg" xmlns="http://www.w3.org/2000/svg">
+        <image id="sheet" x="0" y="0" href=""></image>
+        <g id="marks"></g>
+      </svg>
+    </div>
+    <p class="legend">
+      <span><i class="dot wire"></i> bulunan telin uçları</span>
+      <span><i class="dot net"></i> ortak hat ucu</span>
+      <span><i class="dot todo"></i> senin bakman gereken uç</span>
+      <span><i class="dash"></i> noktalı bağ = iki ucu eşleştirir, <b>gerçek güzergâh değildir</b></span>
+      <span class="muted right">Bir satıra tıkla → çizimde göster</span>
+    </p>
+  </section>
+
+  <aside>
+    <section class="panel" id="todo-panel">
+      <h3>Senin yapman gerekenler</h3>
+      <div id="todo"></div>
+    </section>
+
+    <section class="panel">
+      <h3>Bulunan teller <span id="wire-count" class="badge">0</span></h3>
+      <p class="hint">İki ucu da çizimde takip edilen bağlantılar. Onay durumu her satırda ayrı yazılı.</p>
+      <div id="wires"></div>
+    </section>
+
+    <section class="panel">
+      <h3>Ortak hatlar <span id="net-count" class="badge">0</span></h3>
+      <p class="hint">Aynı hatta bağlı uçlar. Hangi telin nereye gittiği çizimden çıkmadığı için
+        tel çifti üretilmedi.</p>
+      <div id="nets"></div>
+    </section>
+
+    <section class="panel">
+      <h3>Yarım kalanlar <span id="single-count" class="badge">0</span></h3>
+      <p class="hint">Bir ucu bilinen, diğer ucu bu sayfada işaretlenmemiş kayıtlar.</p>
+      <div id="singles"></div>
+    </section>
+
+    <section class="panel">
+      <h3>Onay durumu</h3>
+      <p class="hint">Üç ayrı soru, üç ayrı sayı. Biri diğerini doldurmaz.</p>
+      <div id="dimensions"></div>
+    </section>
+
+    <section class="panel muted-panel">
+      <h3>Durum özeti</h3>
+      <div id="summary"></div>
+      <p class="hint" id="note"></p>
+    </section>
+  </aside>
+</main>
+<script src="/durum.js"></script>
+</body>
+</html>

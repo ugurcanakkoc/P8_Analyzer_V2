@@ -1,0 +1,23 @@
+# --- MÜŞTERİ VERİSİ — ASLA YÜKLENMEZ -----------------------------------------------
+# Bu depo herkese açıktır. Müşteri elektrik projeleri, firma standartları ve bunlardan
+# türetilmiş render/geometri dosyaları buraya girmez.
+13SB003_05_+E122/
+13sb004-e530/
+*.pdf
+Troester Standartları*.xlsx
+UVP Standartları*.xlsx
+UVP_Kablo_*.xlsx
+
+# Pilot çıktıları: müşteri çiziminin 300 DPI render'ları, ham vektör geometrisi,
+# kanıt kırpmaları ve inceleme Excel'leri. Hepsi yeniden üretilebilir.
+output/
+
+# --- yerel çalışma artıkları -------------------------------------------------------
+.venv/
+__pycache__/
+*.py[cod]
+node_modules/
+.playwright-mcp/
+.serena/
+*.sqlite3
+*.log
