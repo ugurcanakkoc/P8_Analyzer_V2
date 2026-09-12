@@ -159,20 +159,10 @@ def _letter(device_tag):
     return '?'
 
 
-def _family(device_tag, pin_names):
-    letter = _letter(device_tag)
-    names = [str(n).strip().upper() for n in pin_names]
-    if letter in FAMILY_BY_LETTER:
-        return FAMILY_BY_LETTER[letter]
-    if len(names) == 2 and set(names) == {'A1', 'A2'}:
-        return 'coil'
-    if len(names) == 2 and all(n.isdigit() for n in names):
-        ends = (names[0][-1], names[1][-1])
-        if ends in NO_CONTACT_ENDS or ends[::-1] in NO_CONTACT_ENDS:
-            return 'contact_no'
-        if ends in NC_CONTACT_ENDS or ends[::-1] in NC_CONTACT_ENDS:
-            return 'contact_nc'
-    return 'unmapped:%s/%s' % (letter, ','.join(names) or '?')
+def _family(device_tag, pin_names, profile=None):
+    """Cihaz ailesi. Kurallar MÜŞTERİ PROFİLİNDEN gelir; profil yoksa yerleşik kurallar."""
+    from . import customer
+    return customer.family_of(profile or customer.load(), device_tag, pin_names)
 
 
 def _articles(pilot):
@@ -245,13 +235,15 @@ def _drawn_links(net, anchors, number, height):
     return links, issues
 
 
-def page_package(pilot, number):
+def page_package(pilot, number, profile=None):
     """Bu sayfanın işaretli cihazları, birleşimleri ve sayfa devamlarıyla aktarım paketi.
 
     Kaynak: kullanıcının işaretleri + çizimden çıkarılan ağlar. Uydurma yoktur:
     işaretlenmemiş cihaz pakete girmez; tanınmayan cihaz ailesi 'unmapped' kalır ve
     aktarımda reddedilir (sessizce atlanmaz).
     """
+    from . import customer
+    profile = profile or customer.load(getattr(pilot, 'customer', None))
     model = pilot.page_model(number)
     rel = pilot.relations(number)
     height = model['page']['height']
@@ -275,14 +267,14 @@ def page_package(pilot, number):
         letter = _letter(tag)
         for column in sorted(columns):
             unit = sorted(columns[column], key=lambda q: q['point'][1])
-            family = _family(tag, [q['pin'] for q in unit])
+            family = _family(tag, [q['pin'] for q in unit], profile)
             if letter == 'X':
                 unit_groups = [[q] for q in unit]          # her klemens ucu kendi nesnesi
             else:
                 unit_groups = [unit]
             for group in unit_groups:
                 names = [q['pin'] for q in group]
-                family = _family(tag, names)
+                family = _family(tag, names, profile)
                 terminal = names[0] if family == 'terminal' else None
                 suffix = ':' + terminal if terminal else ':%s' % '-'.join(names)
                 oid = 'p%d:dev:%s%s' % (number, tag.split('-')[-1], suffix)
@@ -385,6 +377,47 @@ def page_package(pilot, number):
 
 
 TOL_MM = 0.6
+
+
+def document_package(pilot, pages=None, profile=None):
+    """İşaretli sayfaların hepsini TEK pakete koy. Sayfa sırası korunur.
+
+    Her sayfa kendi `page_package` çıktısıyla girer; bir sayfa paket üretemezse öteki
+    sayfalar düşmez, o sayfa gerekçesiyle `failed_pages` altına yazılır — sessizce atlanmaz.
+    """
+    from . import customer
+    profile = profile or customer.load(getattr(pilot, 'customer', None))
+    if pages is None:
+        pages = sorted({q.get('page', 4) for q in pilot.pins})
+    out_pages, expected, issues, failed = [], [], [], []
+    for number in pages:
+        try:
+            package = page_package(pilot, number, profile)
+        except Exception as error:                      # noqa: BLE001 — sayfa düşer, sebebi yazılır
+            failed.append(dict(page=number, error='%s: %s' % (type(error).__name__, error)))
+            continue
+        out_pages += package['pages']
+        expected += package['expected_links']
+        issues += ['sayfa %d: %s' % (number, text) for text in package['issues']]
+    families = sorted({o['family'] for page in out_pages for o in page['objects']
+                       if o['kind'] == 'DEVICE'})
+    missing = [f for f in families if not customer.symbol_of(profile, f)]
+    if missing:
+        issues.append('Sembolü eşlenmemiş aile: %s — bu cihazlar aktarımda reddedilir.'
+                      % ', '.join(missing))
+    body = dict(contract='uvp.pdf2p8.import-request', contract_version='1.0',
+                customer=profile.get('customer'),
+                document_sha256=pilot.manifest.get('source_sha256'),
+                limits=dict(writes_eplan=False, approved_for_production=False,
+                            production_released=False),
+                pages=out_pages, expected_links=expected, issues=issues,
+                failed_pages=failed, families=families, families_without_symbol=missing,
+                symbol_map={f: customer.symbol_of(profile, f) for f in families
+                            if customer.symbol_of(profile, f)})
+    _continuation_ids(body)
+    raw = json.dumps(body, ensure_ascii=False, sort_keys=True).encode('utf-8')
+    body['payload_sha256'] = hashlib.sha256(raw).hexdigest()
+    return body
 
 
 def _nodes(package):

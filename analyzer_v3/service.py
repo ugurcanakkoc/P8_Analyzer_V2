@@ -2101,11 +2101,12 @@ class Pilot:
         Paket bizim sözleşmemizdir; hedef sembol eşlemesi AYRI dosyadır ve katalog alınmadan
         yazılamaz. Panel bu yolu EPLAN köprüsüne verir; aktarımı add-in yapar.
         """
-        from . import eplan_export
+        from . import customer, eplan_export
         payload=payload or {}
+        profile=customer.load(payload.get('customer') or getattr(self,'customer',None))
         if payload.get('page'):
             number=int(payload['page'])
-            package=eplan_export.page_package(self,number)
+            package=eplan_export.page_package(self,number,profile)
             target=ROOT/'output'/'exchange'/('sayfa_%d.json'%number)
             target.parent.mkdir(parents=True,exist_ok=True)
             target.write_text(json.dumps(package,ensure_ascii=False,indent=1),encoding='utf-8')
@@ -2114,6 +2115,20 @@ class Pilot:
                         pages=[number],objects=len(package['pages'][0]['objects']),
                         expected_links=len(package['expected_links']),issues=package['issues'],
                         note='Sayfa paketi yazıldı. EPLAN\'da UvpSayfaAktar.cs ile bu dosyayı seç.')
+        if payload.get('all') or payload.get('marked'):
+            # İşaretli TÜM sayfalar tek dosyada: EPLAN'a tek aktarım, tek geri alma adımı.
+            package=eplan_export.document_package(self,profile=profile)
+            target=ROOT/'output'/'exchange'/('%s_tum_sayfalar.json'%profile['customer'])
+            target.parent.mkdir(parents=True,exist_ok=True)
+            target.write_text(json.dumps(package,ensure_ascii=False,indent=1),encoding='utf-8')
+            return dict(package=str(target),customer=profile['customer'],
+                        pages=[q['physical_page'] for q in package['pages']],
+                        objects=sum(len(q['objects']) for q in package['pages']),
+                        expected_links=len(package['expected_links']),
+                        families_without_symbol=package['families_without_symbol'],
+                        failed_pages=package['failed_pages'],issues=package['issues'],
+                        note='Tüm işaretli sayfalar tek pakette. Sembolü eşlenmemiş aile '
+                             'varsa o cihazlar aktarımda reddedilir.')
         pages=tuple(int(n) for n in (payload.get('pages') or (4,5)))
         package=eplan_export.proof_package(self,pages=pages)
         target=ROOT/'output'/'exchange'/'proof_s03'/'package.json'
