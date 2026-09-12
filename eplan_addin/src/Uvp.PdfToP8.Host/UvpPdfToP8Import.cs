@@ -403,10 +403,31 @@ namespace Uvp.PdfToP8.Host
                                         Dictionary<string, object> pr = D(pinRows[i]);
                                         string pinName = S(pr, "name");
                                         int index = pr.ContainsKey("index") ? Convert.ToInt32(pr["index"]) : i;
-                                        nodePoint[id + "#" + pinName] = P(pr["point_mm"]);
+                                        // Düğüm noktası GERÇEK bağlantı noktasıdır: sembolün uç
+                                        // aralığı kaynaktakiyle aynı olmak zorunda değil. Kaynak
+                                        // koordinatı kullanılırsa çizilen çizgi hiçbir bağlantı
+                                        // noktasına değmez ve bağlantı oluşmaz (ölçüm: 361/370).
+                                        PointD real = P(pr["point_mm"]);
+                                        bool realKnown = false;
+                                        try
+                                        {
+                                            if (index < f.Pins.Length)
+                                            {
+                                                real = new PointD(f.Location.X + f.Pins[index].Location.X,
+                                                                  f.Location.Y + f.Pins[index].Location.Y);
+                                                realKnown = true;
+                                            }
+                                        }
+                                        catch (Exception) { }
+                                        nodePoint[id + "#" + pinName] = real;
                                         nodePage[id + "#" + pinName] = pg;
                                         Dictionary<string, object> pl = new Dictionary<string, object>();
                                         pl["pin"] = pinName;
+                                        pl["source_point"] = XY(P(pr["point_mm"]));
+                                        pl["real_point"] = XY(real);
+                                        pl["real_point_known"] = realKnown;
+                                        pl["shift_mm"] = Math.Round(Math.Abs(real.X - P(pr["point_mm"]).X)
+                                                                    + Math.Abs(real.Y - P(pr["point_mm"]).Y), 2);
                                         if (macroFunction != null)
                                         {
                                             // Makronun kendi uç adları vardır: ÜZERİNE YAZILMAZ, karşılaştırılır.
@@ -461,7 +482,19 @@ namespace Uvp.PdfToP8.Host
                                     }
                                     row["eplan_type"] = sr.GetType().Name;
                                     row["location"] = XY(P(o["point_mm"]));
-                                    nodePoint[id] = P(o["point_mm"]);
+                                    // Kaynak nokta değil, sembolün KENDİ bağlantı noktası.
+                                    PointD real = P(o["point_mm"]);
+                                    try
+                                    {
+                                        PinBase[] points = sv.ConnectionPoints;
+                                        if (points != null && facing < points.Length)
+                                            real = Absolute(sr, points[facing]);
+                                    }
+                                    catch (Exception ex) { row["real_point_error"] = ex.Message; }
+                                    row["real_point"] = XY(real);
+                                    row["shift_mm"] = Math.Round(Math.Abs(real.X - P(o["point_mm"]).X)
+                                                                 + Math.Abs(real.Y - P(o["point_mm"]).Y), 2);
+                                    nodePoint[id] = real;
                                     nodePage[id] = pg;
                                 }
                                 else throw new InvalidOperationException("Tanınmayan nesne türü: " + kind);
@@ -502,21 +535,36 @@ namespace Uvp.PdfToP8.Host
                         }
                         try
                         {
-                            // Şema bağlantısı ÇİZGİYE oturur. Grafik çizgi denenir; bağlantı
-                            // oluşmazsa çizgi SİLİNİR — sayfada anlamsız çizgi bırakmayız.
-                            // Kaynak köşesini diyagonal kestirmeye dönüştürme. Köşeli yolun
-                            // elektriksel köşe sembolleri henüz eşlenmedi; açık hata olarak bırak.
-                            ArrayList route = A(link.ContainsKey("polyline_mm") ? link["polyline_mm"] : null);
-                            if (route.Count > 2)
-                                throw new InvalidOperationException("Kaynak köşeli yol korunuyor; EPLAN köşe eşlemesi gerekiyor.");
-                            if (route.Count == 0 && Math.Abs(nodePoint[a].X-nodePoint[b].X) > 0.01
-                                                 && Math.Abs(nodePoint[a].Y-nodePoint[b].Y) > 0.01)
-                                throw new InvalidOperationException("Kaynak polyline yok; diyagonal bağlantı uydurulmadı.");
-                            Line line = new Line();
-                            line.Create(nodePage[a], nodePoint[a], nodePoint[b]);
+                            // EPLAN'ın KENDİ bağlantı çizgisi kullanılır: grafik çizgi ölçümde
+                            // hiç bağlantı üretmedi (316/316). Noktalar GERÇEK bağlantı
+                            // noktalarıdır; hizalı değillerse tek köşeyle iki parça çizilir —
+                            // diyagonal bağlantı uydurulmaz.
+                            PointD pa = nodePoint[a], pb = nodePoint[b];
+                            List<Placement> segments = new List<Placement>();
+                            if (Math.Abs(pa.X - pb.X) <= 0.01 || Math.Abs(pa.Y - pb.Y) <= 0.01)
+                            {
+                                DynamicConnectionLine line = new DynamicConnectionLine();
+                                line.Create(nodePage[a]);
+                                line.SetGraphics(pa, pb);
+                                segments.Add(line);
+                                lr["route"] = "düz";
+                            }
+                            else
+                            {
+                                PointD corner = new PointD(pb.X, pa.Y);
+                                DynamicConnectionLine first = new DynamicConnectionLine();
+                                first.Create(nodePage[a]);
+                                first.SetGraphics(pa, corner);
+                                DynamicConnectionLine second = new DynamicConnectionLine();
+                                second.Create(nodePage[a]);
+                                second.SetGraphics(corner, pb);
+                                segments.Add(first); segments.Add(second);
+                                lr["route"] = "köşeli";
+                                lr["corner"] = XY(corner);
+                            }
                             lr["auto"] = false; lr["line"] = true;
-                            lr["from"] = XY(nodePoint[a]); lr["to"] = XY(nodePoint[b]);
-                            pending.Add(new object[] { lr, line, nodePage[a], nodePoint[a], nodePoint[b] });
+                            lr["from"] = XY(pa); lr["to"] = XY(pb);
+                            pending.Add(new object[] { lr, segments, nodePage[a], pa, pb });
                         }
                         catch (Exception ex)
                         {
@@ -535,14 +583,15 @@ namespace Uvp.PdfToP8.Host
                         foreach (object[] item in pending)
                         {
                             Dictionary<string, object> lr = (Dictionary<string, object>)item[0];
-                            Line line = (Line)item[1];
+                            List<Placement> segments = (List<Placement>)item[1];
                             if (Linked(after, (Page)item[2], (PointD)item[3], (PointD)item[4]))
                             {
-                                lr["connected_by"] = "GRAPHIC_LINE"; lr["ok"] = true; byLine++;
+                                lr["connected_by"] = "CONNECTION_LINE"; lr["ok"] = true; byLine++;
                             }
                             else
                             {
-                                try { line.Remove(); } catch (Exception) { }
+                                foreach (Placement segment in segments)
+                                    try { segment.Remove(); } catch (Exception) { }
                                 lr["line"] = false;
                                 lr["connected_by"] = null;
                                 lr["note"] = "Bağlantı oluşmadı; çizgi silindi.";
