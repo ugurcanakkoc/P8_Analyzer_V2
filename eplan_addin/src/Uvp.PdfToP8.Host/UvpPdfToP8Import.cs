@@ -81,11 +81,40 @@ namespace Uvp.PdfToP8.Host
             return null;
         }
 
+        /// <summary>Parçanın ŞEMA makrosu. Ölçüm: ARTICLE_MACRO 3D makrosunu veriyor
+        /// (13/13 '*_3D.ema'); şema makrosu grup sembol makrosu alanındadır.</summary>
         static string MacroOf(MDPart part)
         {
             if (part == null) return "";
-            try { return Convert.ToString(part.Properties.ARTICLE_MACRO.ToString()); }
-            catch (Exception) { return ""; }
+            foreach (Func<string> read in new Func<string>[] {
+                delegate { return part.Properties.ARTICLE_GROUPSYMBOLMACRO_IEC.ToString(); },
+                delegate { return part.Properties.ARTICLE_GROUPSYMBOLMACRO.ToString(); } })
+            {
+                try
+                {
+                    string value = read();
+                    if (!string.IsNullOrEmpty(value)) return value;
+                }
+                catch (Exception) { }
+            }
+            return "";
+        }
+
+        /// <summary>Makroda şema (MultiLine) gösterimi var mı?</summary>
+        static bool HasMultiLine(string macro, Project project)
+        {
+            try
+            {
+                Eplan.EplApi.DataModel.MasterData.WindowMacro probe =
+                    new Eplan.EplApi.DataModel.MasterData.WindowMacro();
+                probe.Open(macro, project);
+                foreach (Eplan.EplApi.DataModel.MasterData.WindowMacro.Enums.RepresentationType type
+                         in probe.RepresentationTypes)
+                    if (type == Eplan.EplApi.DataModel.MasterData.WindowMacro.Enums.RepresentationType.MultiLine)
+                        return true;
+            }
+            catch (Exception) { }
+            return false;
         }
 
         /// <summary>Makroyu yerleştir ve İLK UCU hedef noktaya oturt. Makro kendi uçlarını
@@ -106,7 +135,22 @@ namespace Uvp.PdfToP8.Host
         static Function PlaceMacro(string macro, Page page, PointD target, string firstPin,
                                    List<string> wanted, Dictionary<string, object> row, List<string> log)
         {
-            StorableObject[] placed = new Insert().WindowMacro(macro, 0, page, target, Insert.MoveKind.Absolute);
+            // Şema sayfasına ŞEMA gösterimi konur. Varsayılan gösterim montaj görünümü
+            // olabiliyor: ölçümde motor koruma ve sigorta kutusu 'PANP' sembollü, yüzlerce
+            // çizgilik montaj çizimi olarak geliyordu.
+            bool multiLine = HasMultiLine(macro, page.Project);
+            StorableObject[] placed = multiLine
+                ? new Insert().WindowMacro(macro,
+                      Eplan.EplApi.DataModel.MasterData.WindowMacro.Enums.RepresentationType.MultiLine,
+                      0, page, target, Insert.MoveKind.Absolute)
+                : new Insert().WindowMacro(macro, 0, page, target, Insert.MoveKind.Absolute);
+            row["macro_representation"] = multiLine ? "MultiLine" : "Default";
+            if (!multiLine)
+            {
+                RemoveAll(placed);
+                throw new InvalidOperationException("Makroda şema (MultiLine) gösterimi yok; "
+                    + "montaj görünümü şema sayfasına konmaz.");
+            }
             if (placed == null || placed.Length == 0) throw new InvalidOperationException("Makro hiçbir nesne üretmedi.");
             Function function = null;
             int functionCount = 0;

@@ -185,6 +185,27 @@ namespace Uvp.PdfToP8.Host
                         continue;
                     }
 
+                    // Makro birden çok GÖSTERİM TÜRÜ taşır (şema / montaj / tek hat…).
+                    // Şema sayfasına MultiLine konur; varsayılan montaj görünümü olabiliyor.
+                    List<string> available = new List<string>();
+                    bool hasMultiLine = false;
+                    try
+                    {
+                        Eplan.EplApi.DataModel.MasterData.WindowMacro probe =
+                            new Eplan.EplApi.DataModel.MasterData.WindowMacro();
+                        probe.Open(macro, scratch);
+                        foreach (Eplan.EplApi.DataModel.MasterData.WindowMacro.Enums.RepresentationType type
+                                 in probe.RepresentationTypes)
+                        {
+                            available.Add(type.ToString());
+                            if (type == Eplan.EplApi.DataModel.MasterData.WindowMacro.Enums.RepresentationType.MultiLine)
+                                hasMultiLine = true;
+                        }
+                    }
+                    catch (Exception ex) { row["representation_error"] = ex.Message; }
+                    row["representation_types"] = available;
+                    row["has_multiline"] = hasMultiLine;
+
                     List<object> functions = new List<object>();
                     StorableObject[] placed = null;
                     // Her makro AYRI noktaya konur: aynı noktaya ikinci kez koymak
@@ -201,8 +222,13 @@ namespace Uvp.PdfToP8.Host
                     row["at"] = new double[] { x, y };
                     try
                     {
-                        placed = new Insert().WindowMacro(macro, 0, page, new PointD(x, y),
-                                                          Insert.MoveKind.Absolute);
+                        placed = hasMultiLine
+                            ? new Insert().WindowMacro(macro,
+                                  Eplan.EplApi.DataModel.MasterData.WindowMacro.Enums.RepresentationType.MultiLine,
+                                  0, page, new PointD(x, y), Insert.MoveKind.Absolute)
+                            : new Insert().WindowMacro(macro, 0, page, new PointD(x, y),
+                                                       Insert.MoveKind.Absolute);
+                        row["placed_representation"] = hasMultiLine ? "MultiLine" : "Default";
                         // Konan nesne türleri kayda geçer: uç bulunamazsa nerede olduğu görünsün.
                         Dictionary<string, int> kinds = new Dictionary<string, int>();
                         foreach (StorableObject item in placed)
