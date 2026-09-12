@@ -138,16 +138,36 @@ def nearest_word(words, render_bbox, point, radius, others=(), reach=0.0, latera
     best = None
     for w in words:
         wp = word_point(w, render_bbox)
+        d = _label_gap(w, render_bbox, point)
         dx, dy = abs(wp[0]-point[0]), abs(wp[1]-point[1])
-        d = max(dx, dy)
         if d > radius and not (reach and ((dx <= lateral and dy <= reach)
                                           or (dy <= lateral and dx <= reach))):
             continue
-        if any(max(abs(wp[0]-o[0]), abs(wp[1]-o[1])) < d for o in others):
+        if any(_label_gap(w, render_bbox, o) < d for o in others):
             continue                      # yazının sahibi başka bir uç
         if best is None or d < best[0]:
             best = (d, w, wp)
     return best
+
+
+def _label_gap(word, render_bbox, point):
+    """Yazı ile nokta arasındaki uzaklık.
+
+    Kısa yatay yazıda merkez yeterlidir. Döndürülmüş (enden uzun) yazı 20-30 pt uzar ve
+    merkezi kendi ucundan uzağa düşer: ölçüm (sayfa 12, `-1F52`) 'OUT1' merkezi 11.68 pt,
+    kutusu 4.94 pt. O yüzden enden uzun yazılarda KUTU ölçülür. Yatay yazıda kutu ölçmek
+    uzun bir cihaz adını komşu ucun adı yapardı; orada sıkı merkez ölçüsü korunur.
+    """
+    centre = word_point(word, render_bbox)
+    gap = max(abs(centre[0]-point[0]), abs(centre[1]-point[1]))
+    box = word_box_at(word, render_bbox)
+    # Tek karakterlik yazıda kutu ölçülmez: sembolün kendi süsü ('~', '=') uç adının
+    # önüne geçiyordu (ölçüm: sayfa 12, `-1G33`, L3 yerine '~' okunuyordu).
+    if len((word.get("text") or "").strip()) < 2 or (box[3]-box[1]) <= (box[2]-box[0]):
+        return gap
+    near = max(max(box[0]-point[0], point[0]-box[2], 0.0),
+               max(box[1]-point[1], point[1]-box[3], 0.0))
+    return min(gap, near)
 
 
 def attached(segments, point, box=None):
