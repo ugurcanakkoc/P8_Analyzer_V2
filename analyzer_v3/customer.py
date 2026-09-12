@@ -10,6 +10,7 @@ içinde sabit durursa her yeni müşteri kod değişikliği ister. Bu yüzden ku
 
 Profil yoksa yerleşik varsayılan kullanılır; bu, bugüne kadarki davranışın aynısıdır.
 """
+from functools import lru_cache
 import json
 from pathlib import Path
 import re
@@ -17,6 +18,10 @@ import re
 ROOT = Path(__file__).resolve().parents[1]
 HOME = ROOT / 'output' / 'musteri'
 DEFAULT = 'troester'
+# Müşteri adı dosya yoludur: dışarıdan gelir (arayüz/istek gövdesi). Harf, rakam, tire ve
+# alt çizgiden başkası kabul edilmez; yoksa '../' ile profil klasörünün dışına çıkılır.
+NAME = re.compile(r'^[A-Za-z0-9][A-Za-z0-9_-]{0,39}$')
+PATTERN_MAX = 120          # profil dosyasındaki düzenli ifade sınırı
 
 # Yerleşik kurallar: bugün kodda sabit olan davranış. Müşteri profili bunları genişletir
 # veya değiştirir; hiçbiri "her müşteride böyledir" diye sunulmaz.
@@ -36,13 +41,25 @@ def profiles():
     return sorted(p.name for p in HOME.iterdir() if (p / 'profil.json').exists())
 
 
+def valid_name(name):
+    """Müşteri adı. Geçersizse hata verilir; sessizce varsayılana düşülmez."""
+    name = (name or DEFAULT).strip()
+    if not NAME.match(name):
+        raise ValueError('Geçersiz müşteri adı: %r (harf, rakam, - ve _ kullanın).' % name)
+    return name
+
+
 def path_of(name):
-    return HOME / (name or DEFAULT) / 'profil.json'
+    name = valid_name(name)
+    file = (HOME / name / 'profil.json').resolve()
+    if HOME.resolve() not in file.parents:
+        raise ValueError('Müşteri profili yalnız %s altında olabilir.' % HOME)
+    return file
 
 
 def load(name=None):
     """Profili oku. Yoksa yerleşik varsayılanla, boş sembol eşlemesiyle döner."""
-    name = name or DEFAULT
+    name = valid_name(name)
     file = path_of(name)
     if not file.exists():
         return dict(customer=name, source=None, rules=list(BUILTIN_RULES), families={},
@@ -56,6 +73,7 @@ def load(name=None):
 
 
 def save(name, rules, families, note=''):
+    name = valid_name(name)
     file = path_of(name)
     file.parent.mkdir(parents=True, exist_ok=True)
     file.write_text(json.dumps(dict(contract='uvp.pdf2p8.customer-profile', contract_version='1.0',
@@ -83,7 +101,10 @@ def _matches(rule, letter, names):
     if rule.get('pin_count') is not None and len(names) != int(rule['pin_count']):
         return False
     if rule.get('pin_pattern') is not None:
-        pattern = re.compile(rule['pin_pattern'])
+        source = str(rule['pin_pattern'])
+        if len(source) > PATTERN_MAX:
+            raise ValueError('Kural deseni çok uzun (%d karakter).' % len(source))
+        pattern = _compiled(source)
         if not all(pattern.match(n) for n in names):
             return False
     if rule.get('digit_ends') is not None:
@@ -94,6 +115,11 @@ def _matches(rule, letter, names):
         if ends not in pairs and ends[::-1] not in pairs:
             return False
     return True
+
+
+@lru_cache(maxsize=256)
+def _compiled(source):
+    return re.compile(source)
 
 
 def family_of(profile, device_tag, pin_names):

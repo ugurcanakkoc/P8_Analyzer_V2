@@ -2118,7 +2118,8 @@ class Pilot:
         if payload.get('all') or payload.get('marked'):
             # İşaretli TÜM sayfalar tek dosyada: EPLAN'a tek aktarım, tek geri alma adımı.
             package=eplan_export.document_package(self,profile=profile)
-            target=ROOT/'output'/'exchange'/('%s_tum_sayfalar.json'%profile['customer'])
+            # Dosya adı müşteri adından gelir; ad DOĞRULANIR (yol parçası olamaz).
+            target=ROOT/'output'/'exchange'/('%s_tum_sayfalar.json'%customer.valid_name(profile['customer']))
             target.parent.mkdir(parents=True,exist_ok=True)
             target.write_text(json.dumps(package,ensure_ascii=False,indent=1),encoding='utf-8')
             return dict(package=str(target),customer=profile['customer'],

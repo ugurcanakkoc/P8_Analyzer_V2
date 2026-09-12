@@ -2185,6 +2185,39 @@ class PageCacheQueueTests(unittest.TestCase):
 
 
 
+class CustomerProfileTests(unittest.TestCase):
+    """Müşteri profili: aile kuralları veri, ad ise dosya yolu — doğrulanır."""
+
+    def test_customer_name_cannot_escape_the_profile_folder(self):
+        from analyzer_v3 import customer
+        self.assertEqual(customer.path_of('troester').name, 'profil.json')
+        self.assertEqual(customer.path_of('troester').parent.name, 'troester')
+        for bad in ('../../etc', 'a/b', '..', 'x'*50, r'C:\Windows\evil', 'nokta.'):
+            with self.assertRaises(ValueError, msg=bad):
+                customer.path_of(bad)
+
+    def test_rules_are_data_and_unknown_device_stays_unmapped(self):
+        from analyzer_v3 import customer
+        profile = dict(customer='deneme', rules=[
+            dict(family='plc_channel', letter='D', pin_count=1, pin_pattern=r'^\d{1,2}$'),
+            dict(family='terminal', letter='X')], families={
+            'terminal': dict(library='IEC_symbol', symbol='X', variant=0)})
+        self.assertEqual(customer.family_of(profile, '=122+E122-13D22', ['1']), 'plc_channel')
+        self.assertEqual(customer.family_of(profile, '=122+E122-X4', ['23']), 'terminal')
+        # Kural yoksa aile UYDURULMAZ.
+        self.assertEqual(customer.family_of(profile, '=122+E122-1G33', ['L1', '+']),
+                         'unmapped:G/L1,+')
+        # Sembolü olmayan aile None döner; aktarım bunu reddeder.
+        self.assertIsNone(customer.symbol_of(profile, 'plc_channel'))
+        self.assertEqual(customer.symbol_of(profile, 'terminal')['symbol'], 'X')
+
+    def test_overlong_rule_pattern_is_refused(self):
+        from analyzer_v3 import customer
+        profile = dict(rules=[dict(family='x', pin_pattern='(' * 200)], families={})
+        with self.assertRaises(ValueError):
+            customer.family_of(profile, '-1D1', ['1'])
+
+
 if __name__=='__main__':
     unittest.main()
 
