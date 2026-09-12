@@ -21,6 +21,7 @@ using System.Web.Script.Serialization;
 using Eplan.EplApi.ApplicationFramework;
 using Eplan.EplApi.Base;
 using Eplan.EplApi.DataModel;
+using Eplan.EplApi.DataModel.Filters;
 using Eplan.EplApi.HEServices;
 using Eplan.EplApi.MasterData;
 
@@ -117,8 +118,10 @@ namespace Uvp.PdfToP8.Host
                     throw new InvalidOperationException("Paket dosyası yok: " + packagePath);
                 JavaScriptSerializer js = new JavaScriptSerializer();
                 js.MaxJsonLength = int.MaxValue;
+                // DeserializeObject dizileri object[] verir; Deserialize<T> ArrayList verir.
+                // Import ile aynı yol kullanılır ki A() yardımcısı ikisinde de çalışsın.
                 Dictionary<string, object> package =
-                    (Dictionary<string, object>)js.DeserializeObject(File.ReadAllText(packagePath));
+                    js.Deserialize<Dictionary<string, object>>(File.ReadAllText(packagePath));
                 Dictionary<string, List<object>> parts = PartNumbers(package);
                 report["part_numbers"] = parts.Count;
                 log.Add("pakette " + parts.Count + " farklı ürün kodu");
@@ -139,6 +142,7 @@ namespace Uvp.PdfToP8.Host
                 page.Create(scratch, DocumentTypeManager.DocumentType.Circuit, names);
 
                 double x = 20.0, y = 250.0;
+                int pageNumber = 1;
                 foreach (KeyValuePair<string, List<object>> entry in parts)
                 {
                     Dictionary<string, object> row = new Dictionary<string, object>();
@@ -156,8 +160,24 @@ namespace Uvp.PdfToP8.Host
                     row["part_nr"] = Text(delegate { return part.PartNr; });
                     row["type_nr"] = Text(delegate { return part.Properties.ARTICLE_TYPENR.ToString(); });
                     row["description"] = Text(delegate { return part.Properties.ARTICLE_DESCR1.ToString(); });
-                    string macro = Text(delegate { return part.Properties.ARTICLE_MACRO.ToString(); });
+                    // Parçada birden çok makro alanı var. ŞEMA makrosu ayrıdır:
+                    // ARTICLE_MACRO ölçümde 3D makrosunu veriyordu (13/13 '*_3D.ema').
+                    string schematic = Text(delegate { return part.Properties.ARTICLE_GROUPSYMBOLMACRO_IEC.ToString(); });
+                    string generic = Text(delegate { return part.Properties.ARTICLE_GROUPSYMBOLMACRO.ToString(); });
+                    string any = Text(delegate { return part.Properties.ARTICLE_MACRO.ToString(); });
+                    row["macro_iec"] = schematic;
+                    row["macro_group"] = generic;
+                    row["macro_any"] = any;
+                    row["macro_3d"] = Text(delegate { return part.Properties.ARTICLE_3DMACRO.ToString(); });
+                    row["macro_name"] = Text(delegate { return part.Properties.ARTICLE_MACRONAME.ToString(); });
+                    // Parçanın kendi SEMBOLÜ de kayıtlı: aile→sembol kararını bu çözebilir.
+                    row["symbol_file"] = Text(delegate { return part.Properties.ARTICLE_SYMBOLFILE.ToString(); });
+                    row["symbol_number"] = Text(delegate { return part.Properties.ARTICLE_SYMBOLNUMBER.ToString(); });
+
+                    string macro = schematic != "" ? schematic : (generic != "" ? generic : any);
                     row["macro"] = macro;
+                    row["macro_source"] = schematic != "" ? "ARTICLE_GROUPSYMBOLMACRO_IEC"
+                        : (generic != "" ? "ARTICLE_GROUPSYMBOLMACRO" : "ARTICLE_MACRO");
                     if (macro == "")
                     {
                         row["reason"] = "parçanın şema makrosu yok";
@@ -167,13 +187,57 @@ namespace Uvp.PdfToP8.Host
 
                     List<object> functions = new List<object>();
                     StorableObject[] placed = null;
+                    // Her makro AYRI noktaya konur: aynı noktaya ikinci kez koymak
+                    // "aynı semboller üst üste yerleştirilir" hatası veriyordu (12/13).
+                    x += 60.0;
+                    if (x > 380.0) { x = 20.0; y -= 60.0; }
+                    if (y < 20.0)
+                    {
+                        names.PAGE_COUNTER = Convert.ToString(++pageNumber);
+                        page = new Page();
+                        page.Create(scratch, DocumentTypeManager.DocumentType.Circuit, names);
+                        x = 20.0; y = 250.0;
+                    }
+                    row["at"] = new double[] { x, y };
                     try
                     {
                         placed = new Insert().WindowMacro(macro, 0, page, new PointD(x, y),
                                                           Insert.MoveKind.Absolute);
+                        // Konan nesne türleri kayda geçer: uç bulunamazsa nerede olduğu görünsün.
+                        Dictionary<string, int> kinds = new Dictionary<string, int>();
                         foreach (StorableObject item in placed)
                         {
-                            Function function = item as Function;
+                            string kind = item.GetType().Name;
+                            kinds[kind] = (kinds.ContainsKey(kind) ? kinds[kind] : 0) + 1;
+                        }
+                        row["placed_types"] = kinds;
+
+                        // Üst düzey nesneler yetmiyor: makronun İÇİNDEKİ fonksiyonlar da
+                        // sayfada durur. Sayfadaki bütün fonksiyonlar taranır ve yalnız bu
+                        // makronun konduğu bölgedekiler alınır.
+                        List<Function> found = new List<Function>();
+                        foreach (StorableObject item in placed)
+                        {
+                            Function direct = item as Function;
+                            if (direct != null) found.Add(direct);
+                        }
+                        try
+                        {
+                            DMObjectsFinder finder = new DMObjectsFinder(scratch);
+                            FunctionsFilter filter = new FunctionsFilter();
+                            filter.SetFilteredPropertyList(new FunctionPropertyList());
+                            foreach (Function candidate in finder.GetFunctions(filter))
+                            {
+                                if (candidate.Page == null || !candidate.Page.Equals(page)) continue;
+                                if (Math.Abs(candidate.Location.X - x) > 55.0
+                                    || Math.Abs(candidate.Location.Y - y) > 55.0) continue;
+                                if (!found.Contains(candidate)) found.Add(candidate);
+                            }
+                        }
+                        catch (Exception ex) { row["scan_error"] = ex.Message; }
+
+                        foreach (Function function in found)
+                        {
                             if (function == null) continue;
                             List<object> pins = new List<object>();
                             foreach (Pin pin in function.Pins)
