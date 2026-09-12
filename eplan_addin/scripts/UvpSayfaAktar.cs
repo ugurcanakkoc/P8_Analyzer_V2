@@ -79,6 +79,12 @@ public class UvpSayfaAktar
             paket = dialog.FileName;
         }
 
+        // Paketin yanında kendi eşleme dosyası varsa O kullanılır (müşteri profilinden
+        // üretilir); yoksa eski ortak eşlemeye düşülür.
+        string yanEsleme = Path.Combine(Path.GetDirectoryName(paket),
+            Path.GetFileNameWithoutExtension(paket).Replace("_tum_sayfalar", "") + "_mapping.json");
+        if (File.Exists(yanEsleme)) esleme = yanEsleme;
+
         Directory.CreateDirectory(cikti);
         string ozetDosya = Path.Combine(cikti, "ozet.txt");
         if (File.Exists(ozetDosya)) File.Delete(ozetDosya);       // eski özet yeni sonuç sanılmasın

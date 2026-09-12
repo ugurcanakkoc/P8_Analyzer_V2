@@ -436,8 +436,10 @@ def document_package(pilot, pages=None, profile=None):
         out_pages += package['pages']
         expected += package['expected_links']
         issues += ['sayfa %d: %s' % (number, text) for text in package['issues']]
-    families = sorted({o['family'] for page in out_pages for o in page['objects']
-                       if o['kind'] == 'DEVICE'})
+    # Eşleme YALNIZ cihazlar için değildir: birleşim (tnode_down), kesinti noktası
+    # (interruption) ve potansiyel sınırı da sembolle konur. Hepsi listeye girer, yoksa
+    # aktarımda "eşleme yok" diye reddedilirler.
+    families = sorted({o['family'] for page in out_pages for o in page['objects']})
     missing = [f for f in families if not customer.symbol_of(profile, f)]
     if missing:
         issues.append('Sembolü eşlenmemiş aile: %s — bu cihazlar aktarımda reddedilir.'

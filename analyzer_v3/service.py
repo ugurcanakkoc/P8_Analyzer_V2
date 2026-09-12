@@ -2122,7 +2122,15 @@ class Pilot:
             target=ROOT/'output'/'exchange'/('%s_tum_sayfalar.json'%customer.valid_name(profile['customer']))
             target.parent.mkdir(parents=True,exist_ok=True)
             target.write_text(json.dumps(package,ensure_ascii=False,indent=1),encoding='utf-8')
-            return dict(package=str(target),customer=profile['customer'],
+            # EPLAN tarafı eşlemeyi AYRI dosyadan okur: paketle birlikte yazılır ki
+            # aktarımda hangi ailenin hangi sembolle konduğu tek yerde görünsün.
+            mapping=target.with_name('%s_mapping.json'%profile['customer'])
+            mapping.write_text(json.dumps(dict(contract='uvp.pdf2p8.mapping',contract_version='1.0',
+                                               customer=profile['customer'],
+                                               source_profile=profile.get('source'),
+                                               families=package['symbol_map']),
+                                          ensure_ascii=False,indent=1),encoding='utf-8')
+            return dict(package=str(target),mapping=str(mapping),customer=profile['customer'],
                         pages=[q['physical_page'] for q in package['pages']],
                         objects=sum(len(q['objects']) for q in package['pages']),
                         expected_links=len(package['expected_links']),
