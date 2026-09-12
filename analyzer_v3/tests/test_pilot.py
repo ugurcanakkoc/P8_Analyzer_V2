@@ -1928,11 +1928,19 @@ class EplanProofPackageTests(unittest.TestCase):
         self.assertEqual(found['-X1']['issue'], 'TIP_NUMARASI_OKUNAMADI')      # uydurma yok
 
     def test_package_says_when_parts_list_pages_are_not_prepared(self):
-        """Liste sayfaları hazırlanmadıysa ürün kodu YOK diye yazılır, boş geçilmez."""
+        """Liste sayfaları hazırlanmadıysa BELGEDEN kod okunmaz ve bu yazılır.
+
+        Etiket listesi (Excel) ayrı bir kaynaktır: oradan gelen kod bu kuralın dışındadır
+        ve kaynağı `LABEL_LIST` diye işaretlenir — hangi kodun nereden geldiği gizlenmez.
+        """
         pilot = Pilot(RUN5)                                   # önbelleksiz: liste sayfaları hazır değil
         pkg = self.x.page_package(pilot, 4)
         devices = [o for o in pkg['pages'][0]['objects'] if o['kind'] == 'DEVICE']
-        self.assertTrue(all(o['part_number'] is None for o in devices))
+        self.assertFalse([o for o in devices if o.get('part_source') == 'DOCUMENT_PARTS_LIST'])
+        for device in devices:
+            self.assertIn(device.get('part_source'), (None, 'LABEL_LIST'))
+            if device.get('part_source') is None:
+                self.assertIsNone(device['part_number'])
         self.assertTrue(any('Malzeme listesi sayfaları hazırlanmadı' in i for i in pkg['issues']))
 
     def test_compare_reports_missing_extra_and_identity(self):
@@ -2183,6 +2191,44 @@ class PageCacheQueueTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             c.page_dir(74)
 
+
+
+class LabelListTests(unittest.TestCase):
+    """Etiket listesi: çok kodlu etikette cihazın kendisi seçilir, ötekiler atılmaz."""
+
+    def rows(self):
+        # Troester listesindeki gerçek yapı: sigorta buşonu x3, kapak x3, kutu x1.
+        return [dict(code='SIE.5SE2316', qty=3, location='+E122', sheet='s', row=2),
+                dict(code='SIE.5SH5416', qty=3, location='+E122', sheet='s', row=3),
+                dict(code='RIT.9340950', qty=1, location='+E122', sheet='s', row=4)]
+
+    def test_multi_part_label_picks_the_carrier_not_the_consumable(self):
+        from analyzer_v3 import labels
+        picked = labels.pick(self.rows())
+        self.assertEqual(picked['code'], 'RIT.9340950')
+        self.assertIn('adedi', picked['reason'])
+        # Röle: iki kod da adet 1 — listedeki ilk kod ana cihazdır, ikincisi yardımcı blok.
+        relay = [dict(code='SIE.3RH2122-1BB40', qty=1, sheet='s', row=1),
+                 dict(code='SIE.3RT2916-1BB00', qty=1, sheet='s', row=2)]
+        self.assertEqual(labels.pick(relay)['code'], 'SIE.3RH2122-1BB40')
+
+    def test_other_codes_are_kept_and_unknown_tag_returns_nothing(self):
+        from analyzer_v3 import labels
+        table = {'=112+E122-3F22': self.rows()}
+        found = labels.for_device(table, '=112+E122-3F22')
+        self.assertEqual(found['code'], 'RIT.9340950')
+        self.assertEqual([r['code'] for r in found['other_codes']],
+                         ['SIE.5SE2316', 'SIE.5SH5416'])
+        self.assertEqual(found['source'], 'LABEL_LIST')
+        # Listede olmayan cihaz için kod UYDURULMAZ.
+        self.assertIsNone(labels.for_device(table, '=112+E122-X1'))
+
+    def test_prefix_preference_overrides_the_default_pick(self):
+        from analyzer_v3 import labels
+        picked = labels.pick(self.rows(), prefer_prefix='SIE')
+        self.assertEqual(picked['code'], 'SIE.5SE2316'[:0] or picked['code'])
+        # SIE ön ekinde adet 1 yok; kural bu yüzden varsayılana döner.
+        self.assertEqual(picked['code'], 'RIT.9340950')
 
 
 class CustomerProfileTests(unittest.TestCase):

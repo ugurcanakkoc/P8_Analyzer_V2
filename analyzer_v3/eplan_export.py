@@ -165,6 +165,29 @@ def _family(device_tag, pin_names, profile=None):
     return customer.family_of(profile or customer.load(), device_tag, pin_names)
 
 
+def _label_table(pilot, profile):
+    """Etiket listesi (Excel) — belgenin yanındaki dosyadan, bir kez okunur.
+
+    Dosya yoksa boş tablo döner ve paket bunu `issues` altında söyler: sessizce
+    "kod yok" denmez, "liste bulunamadı" denir.
+    """
+    from . import labels
+    if getattr(pilot, '_label_cache', None) is not None:
+        return pilot._label_cache
+    given = (profile or {}).get('label_file')
+    path = Path(given) if given else labels.find_file(Path(pilot.manifest['source_path']).parent)
+    table, note = {}, None
+    if path is None:
+        note = 'Etiket listesi (Excel) bulunamadı; ürün kodu yalnız malzeme listesinden aranacak.'
+    else:
+        try:
+            table = labels.read(path)
+        except Exception as error:                        # noqa: BLE001 — paket düşmez
+            note = 'Etiket listesi okunamadı (%s): %s' % (path, error)
+    pilot._label_cache = dict(table=table, path=str(path) if path else None, note=note)
+    return pilot._label_cache
+
+
 def _articles(pilot):
     """Belgenin malzeme listesinden cihaz → ürün kodu adayları (bir kez okunur)."""
     from . import parts
@@ -250,6 +273,9 @@ def page_package(pilot, number, profile=None):
     objects, expected, issues = [], [], []
     marks = [n for n in model['nodes'] if n['kind'] == 'PIN']
     articles = _articles(pilot)
+    label_data = _label_table(pilot, profile)
+    if label_data['note']:
+        issues.append(label_data['note'])
     if articles['unprepared_pages']:
         issues.append('Malzeme listesi sayfaları hazırlanmadı: %s — ürün kodu okunamadı.'
                       % ', '.join(str(n) for n in articles['unprepared_pages']))
@@ -300,10 +326,21 @@ def page_package(pilot, number, profile=None):
                 candidates = [dict(type_number=number, manufacturer=row.get('manufacturer'),
                                    description=row.get('description'), source_page=row.get('page'))
                               for row in found.get('candidates', []) for number in row['type_numbers']]
+                # Ürün kodu ÖNCE etiket listesinden (yapılandırılmış veri), sonra belgenin
+                # malzeme listesinden (metin çıkarımı) gelir. İkisi de yoksa alan boş kalır.
+                from . import labels as label_reader
+                strategy = (profile.get('part_pick') or {}).get('strategy', 'first_qty_1')
+                prefer = (profile.get('part_pick') or {}).get('prefer_prefix', {}).get(
+                    customer.letter_of(tag))
+                found_label = label_reader.for_device(label_data['table'], tag, strategy, prefer)
                 objects.append(dict(id=oid, kind='DEVICE', family=family, device_tag=tag,
                                     terminal=terminal, pins=rows, part_candidates=candidates,
-                                    part_number=candidates[0]['type_number'] if len(candidates) == 1 else None,
-                                    part_source='DOCUMENT_PARTS_LIST' if candidates else None))
+                                    part_number=(found_label['code'] if found_label else
+                                                 candidates[0]['type_number'] if len(candidates) == 1 else None),
+                                    part_source=('LABEL_LIST' if found_label else
+                                                 'DOCUMENT_PARTS_LIST' if candidates else None),
+                                    part_reason=found_label['reason'] if found_label else None,
+                                    part_other_codes=found_label['other_codes'] if found_label else []))
                 if family.startswith('unmapped'):
                     issues.append('%s (%s): cihaz ailesi eşlenmedi; aktarımda reddedilir.'
                                   % (tag, ', '.join(names)))
