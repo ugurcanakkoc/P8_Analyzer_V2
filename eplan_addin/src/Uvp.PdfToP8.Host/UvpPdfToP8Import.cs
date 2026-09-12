@@ -119,6 +119,47 @@ namespace Uvp.PdfToP8.Host
 
         /// <summary>Makroyu yerleştir ve İLK UCU hedef noktaya oturt. Makro kendi uçlarını
         /// getirir; sembolde boş kalan uç adları böyle doğru gelir.</summary>
+        /// <summary>İki uç adı aynı ucu mu gösteriyor? Kural `analyzer_v3/pins.py` ile aynı:
+        /// birebir → gevşek (ayırıcı ve harf büyüklüğü) → varyant (1L1→1, 13/1→13, 3.13→13,
+        /// L1intern→L1). Kesme işareti KORUNUR: `2` ile `2'` ayrı terminaldir.</summary>
+        static bool PinNamesMatch(string a, string b)
+        {
+            if (a == null || b == null) return false;
+            a = a.Trim(); b = b.Trim();
+            if (a.Length == 0 || b.Length == 0) return false;
+            if (a == b) return true;
+            if (LoosePin(a) == LoosePin(b)) return true;
+            foreach (string left in PinVariants(a))
+                foreach (string right in PinVariants(b))
+                    if (left == right) return true;
+            return false;
+        }
+
+        static string LoosePin(string name)
+        {
+            System.Text.StringBuilder builder = new System.Text.StringBuilder();
+            foreach (char ch in name.ToLowerInvariant())
+                if (char.IsLetterOrDigit(ch) || ch == '\'') builder.Append(ch);
+            return builder.ToString();
+        }
+
+        static List<string> PinVariants(string name)
+        {
+            List<string> out_ = new List<string>();
+            out_.Add(name);
+            if (name.Length > 6 && name.ToLowerInvariant().EndsWith("intern"))
+                out_.Add(name.Substring(0, name.Length - 6));
+            int slash = name.IndexOf('/');
+            if (slash > 0) out_.Add(name.Substring(0, slash));
+            System.Text.RegularExpressions.Match phase =
+                System.Text.RegularExpressions.Regex.Match(name, @"^(\d+)[Ll]\d+$");
+            if (phase.Success) out_.Add(phase.Groups[1].Value);
+            System.Text.RegularExpressions.Match prefix =
+                System.Text.RegularExpressions.Regex.Match(name, @"^\d+\.(\d+)$");
+            if (prefix.Success) out_.Add(prefix.Groups[1].Value);
+            return out_;
+        }
+
         static void RemoveAll(StorableObject[] placed)
         {
             if (placed == null) return;
@@ -152,39 +193,65 @@ namespace Uvp.PdfToP8.Host
                     + "montaj görünümü şema sayfasına konmaz.");
             }
             if (placed == null || placed.Length == 0) throw new InvalidOperationException("Makro hiçbir nesne üretmedi.");
-            Function function = null;
-            int functionCount = 0;
+
+            // Şema makrosu genelde TEK fonksiyon değildir: ölçümde SIE.3RQ4018-1AB00
+            // BoxedDevice(DC) + 5 x DCP getiriyor. Bütün fonksiyonların uçları toplanır.
+            List<Function> functions = new List<Function>();
             foreach (StorableObject item in placed)
             {
                 Function candidate = item as Function;
-                if (candidate != null) functionCount++;
-                if (candidate != null && (function == null || candidate.Pins.Length > function.Pins.Length))
-                    function = candidate;
+                if (candidate != null) functions.Add(candidate);
             }
-            if (function == null || functionCount != 1)
+            if (functions.Count == 0)
             {
                 RemoveAll(placed);
-                throw new InvalidOperationException("Tek fonksiyon yerine " + functionCount + " fonksiyon getiren makro otomatik uygulanmaz.");
+                throw new InvalidOperationException("Makroda fonksiyon yok (yalnız grafik).");
             }
-            // Uç adları kaynakla aynı küme değilse bu makro bu birimin yerine geçemez.
             List<string> actual = new List<string>();
-            foreach (Pin pin in function.Pins) if (!string.IsNullOrEmpty(pin.Name)) actual.Add(pin.Name);
-            bool fits = actual.Count == wanted.Count;
-            if (fits) foreach (string name in wanted) if (!actual.Contains(name)) { fits = false; break; }
+            List<Pin> actualPins = new List<Pin>();
+            foreach (Function each in functions)
+                foreach (Pin pin in each.Pins)
+                    if (!string.IsNullOrEmpty(pin.Name))
+                    {
+                        actual.Add(pin.Name);
+                        actualPins.Add(pin);
+                    }
             row["macro_pins"] = actual.ToArray();
-            if (!fits)
+            row["macro_functions"] = functions.Count;
+
+            // Kaynağın her ucu makroda karşılık bulmalı; makroda FAZLA uç olması normaldir.
+            List<Pin> matchedPins = new List<Pin>();
+            List<string> missing = new List<string>();
+            List<bool> used = new List<bool>();
+            for (int i = 0; i < actualPins.Count; i++) used.Add(false);
+            foreach (string want in wanted)
+            {
+                int hit = -1;
+                for (int i = 0; i < actualPins.Count && hit < 0; i++)
+                    if (!used[i] && PinNamesMatch(want, actual[i])) hit = i;
+                if (hit < 0) { missing.Add(want); continue; }
+                used[hit] = true;
+                matchedPins.Add(actualPins[hit]);
+            }
+            if (missing.Count > 0)
             {
                 RemoveAll(placed);
-                throw new InvalidOperationException("Makro uçları kaynakla tutmuyor: makro ["
-                    + string.Join(",", actual.ToArray()) + "] kaynak [" + string.Join(",", wanted.ToArray()) + "]");
+                throw new InvalidOperationException("Makroda karşılığı olmayan uç: ["
+                    + string.Join(",", missing.ToArray()) + "] · makro uçları ["
+                    + string.Join(",", actual.ToArray()) + "]");
             }
-            Pin anchor = null;
-            foreach (Pin pin in function.Pins)
-                if (anchor == null || pin.Name == firstPin) anchor = pin;
+            Function function = functions[0];
+            foreach (Function each in functions)
+                if (each.Pins.Length > function.Pins.Length) function = each;
+
+            Pin anchor = matchedPins.Count > 0 ? matchedPins[0] : null;
+            foreach (Pin pin in actualPins)
+                if (PinNamesMatch(firstPin, pin.Name)) { anchor = pin; break; }
             if (anchor != null)
             {
-                PointD absolute = new PointD(function.Location.X + anchor.Location.X,
-                                             function.Location.Y + anchor.Location.Y);
+                Function owner = anchor.ParentFunction != null ? anchor.ParentFunction : function;
+                PointD absolute = new PointD(owner.Location.X + anchor.Location.X,
+                                             owner.Location.Y + anchor.Location.Y);
                 PointD delta = new PointD(target.X - absolute.X, target.Y - absolute.Y);
                 foreach (StorableObject item in placed)
                 {
@@ -390,15 +457,26 @@ namespace Uvp.PdfToP8.Host
                                     // ÖNCE ürün kodu: makro gerçek uç adlarını getirir. Kod yoksa
                                     // veya makro bulunamazsa sembole düşülür ve makbuza yazılır.
                                     Function macroFunction = null;
+                                    // ÖNCE etiket listesinden gelen KESİN kod denenir; o yoksa
+                                    // belgenin malzeme listesinden çıkan adaylar. Ölçüm: etiket
+                                    // kodlarıyla 13/13 parça bulunuyor, tip numarasıyla 0.
+                                    List<string> tryNumbers = new List<string>();
+                                    string labelPart = S(o, "part_number");
+                                    if (labelPart != "") tryNumbers.Add(labelPart);
                                     ArrayList candidates = A(o.ContainsKey("part_candidates") ? o["part_candidates"] : null);
-                                    if (candidates.Count > 1)
+                                    if (tryNumbers.Count == 0 && candidates.Count > 1)
                                     {
                                         row["part_lookup"] = "Birden çok ürün/aksesuar adayı; otomatik makro seçilmedi.";
                                         candidates = new ArrayList();
                                     }
                                     foreach (object co in candidates)
                                     {
-                                        string typeNumber = S(D(co), "type_number");
+                                        string number = S(D(co), "type_number");
+                                        if (number != "" && !tryNumbers.Contains(number)) tryNumbers.Add(number);
+                                    }
+                                    row["part_tried"] = tryNumbers.ToArray();
+                                    foreach (string typeNumber in tryNumbers)
+                                    {
                                         MDPart part = FindPart(partsDb, typeNumber, log);
                                         string macro = MacroOf(part);
                                         if (part == null) { row["part_lookup"] = "bulunamadı: " + typeNumber; continue; }
@@ -554,6 +632,17 @@ namespace Uvp.PdfToP8.Host
                     // ÖNCE otomatik bağlama: hizalı ve birbirine bakan bağlantı noktaları EPLAN
                     // tarafından kendiliğinden bağlanır; çizgi çizmeye gerek yoktur.
                     new Generate().Connections(pages.ToArray(), true);
+                    int connectionsBeforeLines = 0;
+                    {
+                        DMObjectsFinder beforeFinder = new DMObjectsFinder(prj);
+                        foreach (Page countPage in pages)
+                        {
+                            ConnectionsFilter countFilter = new ConnectionsFilter();
+                            countFilter.Page = countPage;
+                            foreach (Connection ignored in beforeFinder.GetConnections(countFilter))
+                                connectionsBeforeLines++;
+                        }
+                    }
                     log.Add("Generate.Connections(" + pages.Count + " sayfa) — otomatik");
 
                     // SONRA yalnız oluşmayan bağlar için çizgi. Böylece sayfada başıboş mavi çizgi
@@ -623,6 +712,21 @@ namespace Uvp.PdfToP8.Host
                         new Generate().Connections(pages.ToArray(), true);
                         log.Add("Generate.Connections — çizgilerden sonra");
                         DMObjectsFinder after = new DMObjectsFinder(prj);
+                        // Bağlantı SAYISI ölçülür: Linked() bağlantıyı koordinatla arar ve
+                        // EPLAN başka uçlarla kurduysa göremez; o zaman İYİ çizgiyi silerdik.
+                        int totalAfter = 0;
+                        foreach (Page countPage in pages)
+                        {
+                            ConnectionsFilter countFilter = new ConnectionsFilter();
+                            countFilter.Page = countPage;
+                            foreach (Connection ignored in after.GetConnections(countFilter)) totalAfter++;
+                        }
+                        receipt["connections_after_lines"] = totalAfter;
+                        receipt["connections_before_lines"] = connectionsBeforeLines;
+                        bool linesHelped = totalAfter > connectionsBeforeLines;
+                        receipt["lines_helped"] = linesHelped;
+                        log.Add("bağlantı sayısı: çizgiden önce " + connectionsBeforeLines
+                                + ", sonra " + totalAfter);
                         int byLine = 0, dropped = 0;
                         foreach (object[] item in pending)
                         {
@@ -631,6 +735,13 @@ namespace Uvp.PdfToP8.Host
                             if (Linked(after, (Page)item[2], (PointD)item[3], (PointD)item[4]))
                             {
                                 lr["connected_by"] = "CONNECTION_LINE"; lr["ok"] = true; byLine++;
+                            }
+                            else if (linesHelped)
+                            {
+                                // Toplam bağlantı sayısı arttıysa çizgiler işe yaramış demektir;
+                                // tek tek doğrulayamasak da SİLMEYİZ (silmek işi geri alırdı).
+                                lr["connected_by"] = "CONNECTION_LINE (sayı arttı, uç doğrulanamadı)";
+                                byLine++;
                             }
                             else
                             {
