@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>UVP · Cihaz işaretle</title>
+<link rel="stylesheet" href="/isaret.css">
+</head>
+<body>
+<header>
+  <strong>Cihaz işaretle</strong>
+  <span class="nav">
+    <button id="prev" title="Önceki sayfa (PageUp)">◀</button>
+    <input id="page-no" type="number" min="1" step="1" inputmode="numeric" title="Sayfa numarası">
+    <button id="next" title="Sonraki sayfa (PageDown)">▶</button>
+    <button id="prepare" hidden>Bu sayfayı hazırla</button>
+  </span>
+  <span id="page-state" class="muted"></span>
+  <span class="grow"></span>
+  <label class="check"><input id="show-marks" type="checkbox" checked> İşaretleri göster</label>
+  <button id="fit" title="Sayfaya sığdır (0)">Sığdır</button>
+</header>
+
+<main>
+  <div id="stage">
+    <svg id="svg" xmlns="http://www.w3.org/2000/svg">
+      <image id="sheet" x="0" y="0" href=""></image>
+      <g id="existing"></g>
+      <g id="parts"></g>
+      <g id="selection"></g>
+    </svg>
+    <p id="hint" class="hint">Sembole <b>tıkla</b> · boş yere <b>sürükle</b>: kaydır · <b>Shift+sürükle</b>: kutu çiz · tekerlek: yakınlaştır</p>
+  </div>
+
+  <aside id="panel" hidden>
+    <h2 id="panel-title">Seçim</h2>
+    <label class="field">Cihaz adı
+      <input id="device" type="text" autocomplete="off" placeholder="okunamadıysa siz yazın">
+    </label>
+    <p id="device-note" class="muted"></p>
+
+    <h3>Uçlar</h3>
+    <ul id="pins" class="rows"></ul>
+
+    <h3>Çizim parçaları</h3>
+    <p class="muted">Sembole ait olmayanı kapat: şekle ve aramaya girmez. Parça silinmez.</p>
+    <ul id="objects" class="rows"></ul>
+
+    <ul id="issues" class="issues"></ul>
+
+    <div class="buttons">
+      <button id="save" class="primary">Kaydet (Enter)</button>
+      <button id="cancel">Vazgeç (Esc)</button>
+    </div>
+    <div class="buttons">
+      <button id="similar" disabled title="Önce kaydet">Benzerlerini bul</button>
+    </div>
+    <div id="similar-out"></div>
+  </aside>
+</main>
+
+<footer id="log" class="muted">Hazır.</footer>
+<script src="/isaret.js"></script>
+</body>
+</html>

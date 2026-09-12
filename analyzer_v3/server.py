@@ -139,10 +139,12 @@ def make_server(pilot,port=8765):
                     page=query.get('page',[None])[0]
                     point=query.get('point',[''])[0]
                     box=query.get('bbox',[''])[0]
+                    drop=query.get('exclude',[''])[0]
                     return self.send(200,current().propose_symbol(
                         int(page) if page and page.isdigit() else None,
                         point=[float(v) for v in point.split(',')] if point else None,
-                        bbox=[float(v) for v in box.split(',')] if box else None))
+                        bbox=[float(v) for v in box.split(',')] if box else None,
+                        exclude=[v for v in drop.split(',') if v.strip()]))
                 if url.path=='/api/similar':
                     pages=query.get('pages',['ALL'])[0]
                     return self.send(200,current().similar(
@@ -164,6 +166,9 @@ def make_server(pilot,port=8765):
                         return self.send(404,{'error':'Bu sayfa hazırlanmadı.'})
                     return self.send(200,current().page_file(number,'page.png').read_bytes(),'image/png')
                 assets={'/':(STATIC/'durum.html','text/html; charset=utf-8'),
+                        '/isaret':(STATIC/'isaret.html','text/html; charset=utf-8'),
+                        '/isaret.js':(STATIC/'isaret.js','text/javascript; charset=utf-8'),
+                        '/isaret.css':(STATIC/'isaret.css','text/css; charset=utf-8'),
                         '/ayrinti':(STATIC/'index.html','text/html; charset=utf-8'),
                         '/durum.js':(STATIC/'durum.js','text/javascript; charset=utf-8'),
                         '/durum.css':(STATIC/'durum.css','text/css; charset=utf-8'),

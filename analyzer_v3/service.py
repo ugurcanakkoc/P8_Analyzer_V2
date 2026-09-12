@@ -2143,8 +2143,12 @@ class Pilot:
             home=box.get('page',4)
             source=self._page(home)
             home_marks=[q for q in self.pins if q.get('page',4)==home]
-            template=build_template(box,home_marks,source['segments'],source['words'],
-                                    source['render_bbox'],curves=self._page_curves(home))
+            # Kullanıcının çıkardığı parçalar ŞABLONA girmez: etiket kırıntısı yüzünden
+            # aynı sembol başka sayfada eşleşmiyordu.
+            dropped=set(box.get('excluded_objects') or [])
+            template=build_template(box,home_marks,self._without(source['segments'],dropped),
+                                    source['words'],source['render_bbox'],
+                                    curves=self._without(self._page_curves(home),dropped))
             desc=descriptor(template)
             viewable=sorted(self.viewable_pages())
             if pages in (None,'ALL'):
@@ -2184,19 +2188,24 @@ class Pilot:
                                    'Aday kayıt değildir: uygulamayı kullanıcı seçer.')
 
     # ================================================================ elle cihaz işaretleme
-    def _shapes(self,number):
-        """Sembol olabilecek KISA çizim parçaları. Uzun çizgi teldir; kümeye alınmaz."""
+    def _shapes(self,number,exclude=()):
+        """Sembol olabilecek KISA çizim parçaları. Uzun çizgi teldir; kümeye alınmaz.
+
+        `exclude`: kullanıcının "bu sembole ait değil" dediği parçalar (etiket kırıntısı,
+        komşu telin ucu). Parça silinmez; yalnız bu seçime girmez.
+        """
         page=self._page(number)
+        exclude=set(exclude or ())
         out=[]
         for seg in page['segments']:
             (ax,ay),(bx,by)=seg['a'],seg['b']
-            if seg.get('dash') or max(abs(ax-bx),abs(ay-by))>SYMBOL_STROKE_MAX:
+            if seg['id'] in exclude or seg.get('dash') or max(abs(ax-bx),abs(ay-by))>SYMBOL_STROKE_MAX:
                 continue
             out.append(dict(id=seg['id'],kind='segment',
                             bbox=[min(ax,bx),min(ay,by),max(ax,bx),max(ay,by)]))
         for curve in self._page_curves(number):
             box=curve.get('bbox')
-            if not box:
+            if not box or curve['id'] in exclude:
                 continue
             box=[min(box[0],box[2]),min(box[1],box[3]),max(box[0],box[2]),max(box[1],box[3])]
             if max(box[2]-box[0],box[3]-box[1])>SYMBOL_STROKE_MAX:
@@ -2280,7 +2289,36 @@ class Pilot:
             return [round(best[0],2),round(best[1],2)]
         return point
 
-    def propose_symbol(self,number=None,point=None,bbox=None):
+    @staticmethod
+    def _without(rows,exclude):
+        return [r for r in rows if r['id'] not in exclude]
+
+    def _objects_in(self,number,box,pad=2.0):
+        """Kutuya değen çizim parçaları: kullanıcı hangisini çıkaracağını görebilsin."""
+        area=[box[0]-pad,box[1]-pad,box[2]+pad,box[3]+pad]
+        page=self._page(number)
+        rows=[]
+        for seg in page['segments']:
+            (ax,ay),(bx,by)=seg['a'],seg['b']
+            b=[min(ax,bx),min(ay,by),max(ax,bx),max(ay,by)]
+            if b[0]<=area[2] and b[2]>=area[0] and b[1]<=area[3] and b[3]>=area[1]:
+                rows.append(dict(id=seg['id'],kind='segment',a=seg['a'],b=seg['b'],
+                                 dash=bool(seg.get('dash')),
+                                 inside=(area[0]<=b[0] and b[2]<=area[2]
+                                         and area[1]<=b[1] and b[3]<=area[3])))
+        for curve in self._page_curves(number):
+            b=curve.get('bbox')
+            if not b:
+                continue
+            b=[min(b[0],b[2]),min(b[1],b[3]),max(b[0],b[2]),max(b[1],b[3])]
+            if b[0]<=area[2] and b[2]>=area[0] and b[1]<=area[3] and b[3]>=area[1]:
+                rows.append(dict(id=curve['id'],kind='curve',bbox=b,
+                                 points=curve.get('points') or [],
+                                 inside=(area[0]<=b[0] and b[2]<=area[2]
+                                         and area[1]<=b[1] and b[3]<=area[3])))
+        return rows
+
+    def propose_symbol(self,number=None,point=None,bbox=None,exclude=()):
         """Tıklanan (veya çizilen) yerdeki cihaz ÖNERİSİ: kutu, uçlar ve sayfadan okunan adlar.
 
         Hiçbir şey kaydedilmez. Ad ve pin yazıları BU SAYFANIN kendi yazısından okunur; komşu
@@ -2295,11 +2333,13 @@ class Pilot:
                 raise ValueError('Sayfa %s hazırlanmadı; önce sayfa gezgininden hazırlayın.'%number)
             page=self._page(number)
             rb=page['render_bbox']
+            exclude=set(exclude or ())
+            segments=self._without(page['segments'],exclude)
             if bbox is None:
                 if not point:
                     raise ValueError('Nokta veya kutu gerekir.')
                 point=[float(point[0]),float(point[1])]
-                box,used=self._cluster_box(self._shapes(number),point)
+                box,used=self._cluster_box(self._shapes(number,exclude),point)
                 evidence=[dict(id=sh['id'],kind=sh['kind']) for sh in used]
                 source='CLICK_CLUSTER'
             else:
@@ -2309,15 +2349,15 @@ class Pilot:
                     raise ValueError('Kutu çok küçük.')
                 evidence,source=[],'USER_BOX'
             marks=[q for q in self.pins if q.get('page',4)==number]
-            found=[self._snap(page['segments'],marks,q) for q in self._wire_pins(page['segments'],box)]
+            found=[self._snap(segments,marks,q) for q in self._wire_pins(segments,box)]
             pins=[]
             for q in found:
                 rivals=[tuple(o) for o in found if o!=q]
-                hit=similarity.nearest_word(page['words'],rb,tuple(q),11.0,others=rivals)
+                hit=similarity.nearest_word(page['words'],rb,tuple(q),11.0,others=rivals)  # ad sayfadan
                 existing=[m for m in marks if abs(m['point'][0]-q[0])<=0.6 and abs(m['point'][1]-q[1])<=0.6]
                 pins.append(dict(point=q,pin=hit[1]['text'] if hit else '',
                                  pin_source='PAGE_LABEL' if hit else None,
-                                 external_lines=len(similarity.attached(page['segments'],tuple(q))),
+                                 external_lines=len(similarity.attached(segments,tuple(q))),
                                  already_marked=[m['id'] for m in existing],
                                  already_label=('-%s:%s'%(device_tail(existing[0]['device']),existing[0]['pin']))
                                                if existing else None))
@@ -2348,7 +2388,11 @@ class Pilot:
             issues=list(candidate.get('issues') or [])
             if not pins:
                 issues.append('NO_WIRE_AT_SYMBOL')
+            objects=self._objects_in(number,box)
+            for row in objects:
+                row['excluded']=row['id'] in exclude
             return dict(page=number,bbox=box,box_source=source,shape_evidence=evidence,
+                        objects=objects,excluded=sorted(exclude),
                         device=candidate.get('device_name') or '',
                         device_printed=candidate.get('device_printed'),
                         device_source=candidate.get('device_source'),
@@ -2387,7 +2431,8 @@ class Pilot:
             created={'box':None,'pins':[]}
             if payload.get('bbox'):
                 created['box']=self.change_box(dict(page=number,bbox=payload['bbox'],
-                                                    note='Elle işaretlenen cihaz: '+device,active=True))
+                                                    note='Elle işaretlenen cihaz: '+device,active=True,
+                                                    excluded_objects=payload.get('exclude') or []))
             for row in rows:
                 created['pins'].append(self.change(dict(page=number,device=device,
                                                         pin=str(row['pin']).strip(),point=row['point'],

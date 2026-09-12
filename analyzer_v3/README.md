@@ -13,6 +13,20 @@ kodlama/test alt işleri [EPLAN_ADDIN_PLAN.md](../EPLAN_ADDIN_PLAN.md) içinde t
 Bu belge değişikliği işaret/onay veya
 üretim durumunu değiştirmez.
 
+## Cihaz işaretleme ekranı (`/isaret`)
+
+Tek amaçlı basit ekran: PDF'te gez, **programın bulamadığı** cihazı işaretle.
+
+- Sembole tıkla (kümeleme kutusu) veya `Shift+sürükle` ile kutuyu kendin çiz.
+- Kutunun içine giren her çizim parçası sağda listelenir. Sembole ait olmayanı **kapat**:
+  şekle ve benzer aramaya girmez, kutuya giren teli de uç saymaz. Parça SİLİNMEZ; hangi
+  parçanın dışarıda bırakıldığı kutu kaydında (`excluded_objects`) durur.
+- Cihaz ve uç adları bu sayfanın kendi yazısından okunur; okunamazsa boş gelir, uydurulmaz.
+- `Enter` kaydeder, `Esc` kapatır, `PageUp/PageDown` sayfa değiştirir, `0` sayfaya sığdırır.
+- Kaydettikten sonra "Benzerlerini bul" aynı şekli hazırlanmış sayfalarda arar. Hazırlanmamış
+  sayfa taranmaz ve bu "orada yok" demek değildir.
+
+
 ## Çalıştırma
 
 Windows'ta kökteki `start_analyzer.cmd` dosyasını açın; ekrandaki yerel adresi ziyaret edin.

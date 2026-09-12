@@ -1,4 +1,4 @@
-import copy
+﻿import copy
 from io import BytesIO
 import json
 import math
@@ -1955,6 +1955,57 @@ class ManualMarkingTests(unittest.TestCase):
         drawn=self.p.propose_symbol(4,bbox=[139.0,148.0,146.0,165.0])
         self.assertEqual((drawn['box_source'],drawn['device']),('USER_BOX','=112+E122-3F22'))
 
+    def test_marking_screen_is_served_and_propose_accepts_dropped_parts(self):
+        """Basit işaretleme ekranı ve parça çıkarma uç noktası ayakta."""
+        server = make_server(self.p, 0)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        base = 'http://127.0.0.1:%d' % server.server_port
+        try:
+            for path, needle in (('/isaret', b'Cihaz i'), ('/isaret.js', b'propose'),
+                                 ('/isaret.css', b'.part')):
+                with urlopen(base + path) as r:
+                    self.assertIn(needle, r.read())
+            with urlopen(base + '/api/propose?page=4&point=142.73,157.0') as r:
+                first = json.load(r)
+            self.assertTrue(first['objects'])
+            self.assertEqual(first['excluded'], [])
+            drop = [o['id'] for o in first['objects'] if o['inside']][0]
+            with urlopen(base + '/api/propose?page=4&bbox=139,148,146,165&exclude=' + drop) as r:
+                second = json.load(r)
+            self.assertEqual(second['excluded'], [drop])
+        finally:
+            server.shutdown(); server.server_close(); thread.join()
+
+    def test_user_can_drop_a_drawing_part_from_the_selection(self):
+        """Sembole ait olmayan parça (etiket kırıntısı, komşu tel) seçimden çıkarılabilir."""
+        base = self.p.propose_symbol(4, point=[142.73, 157.0])
+        parts = [o['id'] for o in base['objects'] if o['inside']]
+        self.assertTrue(parts, 'kutunun içinde parça yok')
+        self.assertEqual(base['excluded'], [])
+        # Sembolün kendi çizimi çıkarılınca tıklanan yerde şekil kalmaz: uydurma kutu üretilmez.
+        with self.assertRaises(ValueError):
+            self.p.propose_symbol(4, point=[142.73, 157.0], exclude=parts)
+        # Çıkarılan parça KAYBOLMAZ, listede 'excluded' olarak görünür.
+        drawn = self.p.propose_symbol(4, bbox=[139.0, 148.0, 146.0, 165.0], exclude=[parts[0]])
+        self.assertEqual(drawn['excluded'], [parts[0]])
+        self.assertIn(parts[0], [o['id'] for o in drawn['objects']])
+        self.assertTrue([o for o in drawn['objects'] if o['id'] == parts[0]][0]['excluded'])
+
+    def test_dropped_parts_are_stored_on_the_box_and_kept_out_of_similar_search(self):
+        """Çıkarılan parça kayıtta durur ve benzer aramanın şablonuna girmez."""
+        base = self.p.propose_symbol(4, point=[142.73, 157.0])
+        outside = [o for o in base['objects'] if not o['inside']]
+        self.assertTrue(outside, 'kutuya değen dış çizgi yok')
+        box = self.p.change_box(dict(page=4, bbox=base['bbox'], note='maske testi',
+                                     excluded_objects=[outside[0]['id']]))
+        self.assertEqual(box['excluded_objects'], [outside[0]['id']])
+        # Şablon bu parçayı görmeden kurulur; sembolün kendi çizimi durduğu için arama çalışır.
+        found = self.p.similar(box['id'], pages=[4])
+        self.assertTrue(found['results'][0]['candidates'])
+        # Parça SİLİNMEDİ: sayfanın geometrisinde duruyor.
+        self.assertIn(outside[0]['id'], [s['id'] for s in self.p._page(4)['segments']])
+
     def test_mark_saved_on_prepared_page_then_undone_without_deleting_history(self):
         from analyzer_v3.pagecache import PageCache
         from analyzer_v3.prepare import digest
@@ -2105,3 +2156,4 @@ class PageCacheQueueTests(unittest.TestCase):
 
 if __name__=='__main__':
     unittest.main()
+

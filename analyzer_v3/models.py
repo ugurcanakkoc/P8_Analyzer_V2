@@ -189,9 +189,18 @@ def validate_box(data, pages):
         raise ValueError("Geçersiz kutu notu.")
     if not isinstance(data.get("active", True), bool):
         raise ValueError("Kutu durumu doğru/yanlış olmalı.")
+    # Kullanıcının sembol dışı saydığı çizim parçaları. Parça SİLİNMEZ; yalnız bu kutunun
+    # şekline girmez ve neyin dışarıda bırakıldığı kayıtta durur.
+    excluded = data.get("excluded_objects") or []
+    if not isinstance(excluded, list) or len(excluded) > 200:
+        raise ValueError("Çıkarılan parça listesi geçersiz.")
+    for item in excluded:
+        if not isinstance(item, str) or not (0 < len(item) <= 60):
+            raise ValueError("Çıkarılan parça kimliği geçersiz: %r" % (item,))
     # A retired mask is kept as a record and only switched off: nothing is deleted.
     return dict(bbox=[round(v, 4) for v in box], page=page, note=data.get("note", ""),
-                active=data.get("active", True), source="MANUAL_VISUAL_MASK")
+                active=data.get("active", True), source="MANUAL_VISUAL_MASK",
+                excluded_objects=sorted(set(excluded)))
 
 
 def validate_evidence_row(row):
