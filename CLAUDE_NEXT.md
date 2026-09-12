@@ -1,8 +1,9 @@
-# Claude — sonraki uygulama: tüm sayfa gezgini ve şema ilişkileri
+# Claude — PDF → EPLAN P8 uçtan uca kodlama görevi
 
 Çalışma kökü: `C:\Users\UVW-U\Desktop\astra 6 test`.
 Önce AGENTS.md, MAIN.md'nin **tamamı**, PLAN.md'nin güncel S00–S06 sırası ve
-`output/research/2026-09-11_PDF2EPLAN_Yon_Degisikligi.md` okunacak.
+`output/research/2026-09-11_PDF2EPLAN_Yon_Degisikligi.md` ile
+`EPLAN_ADDIN_PLAN.md` dosyalarının tamamı okunacak.
 
 ## Değişen hedef
 
@@ -12,8 +13,27 @@ sonra verir. PE bara/toprak hattı olarak temsil edilir; yapay fiziksel numara �
 Varsayılan pano içi filtre; gerekirse kullanıcının seçebildiği tam sayfa taslağı. K3 standart
 önceliği yeniden sorulmaz. Eski onayları yeni doğruluk gibi kullanma veya tazeleme.
 
-Bu görev **S01 ve S02'nin gerekli en küçük çekirdeğini** uygular. Yeni AI, kapsamlı yeniden
-mimari, başka müşteri, E530 ayarı ve çok ajanlı genel inceleme turu açma.
+Kullanıcı **EPLAN API satın alacağını** bildirdi ve bütün akışın Claude tarafından kodlanmasını
+istedi. Satın alma kararını tekrar sorma; henüz çalıştırılmamış host yetkisini var sayma.
+Bu görev S01–S06'yı ve `EPLAN_ADDIN_PLAN.md` E00–E10 alt işlerini kapsar. **Önce S01 ve
+S02'nin gerekli en küçük çekirdeğini** teslim et; hemen gerçek P8 kanıtına geç. İlk paketi
+bitirmek tüm görevin bittiği anlamına gelmez. Güvenle yapılabilir bağımsız kod işlerini sırayla
+ilerlet; gerçekten eksik ortam/yetki varsa yalnız etkilenen işi açık bırakıp somut raporla.
+Yeni AI, kapsamlı yeniden mimari, başka müşteri, E530 ayarı ve çok ajanlı genel inceleme turu açma.
+
+## Çalışma sözleşmesi
+
+- PLAN'da tamamlanan alt işi yalnız kod/test/görsel veya gerçek P8 kanıtı varsa işaretle.
+- Yeni JSON alanları ve dosyalar bizim sözleşmemizdir; EPLAN'ın hazır import formatı diye sunma.
+- Yerel P8: `C:\Program Files\EPLAN\Platform\2026.0.3\Bin`, build 2026.0.3.25702.
+  API DLL ve XML başvuruları mevcut. Standart .NET SDK listesi boştu; kullanılabilir
+  derleyici/SDK hedefini araştır, gereken kurulum varsa bildir. API imzalarını yerelden doğrula.
+- Python → kaynak sayfa modeli; C# → hedef katalog, önizleme, gerçek nesne oluşturma ve geri
+  okuma. C# Core SDK bağımsız; Host gerçek sürüme derlenir. Taklit host testi P8 kanıtı değildir.
+- İlk aktarım ayrı test projesine ve sınırlı bölgeye. Canlı EPLAN projesini değiştirme/silme,
+  ücretli işlem, kimlik bilgisi yükleme veya ek kurulum için bu metinden sınırsız yetki çıkarma.
+- Eski kullanıcı düzeltmeleri/onayları korunur. Köprü tel/tarak kararı sorulmaz; şema topolojisi
+  korunur. EPLAN'da kullanıcının değiştirdiği alanı yeniden importta otomatik ezme.
 
 ## 1. Önce gerçek eksikliği kapat: pin → hat → devam
 
@@ -73,7 +93,7 @@ Bu sayfa/cihaz/segment adları **regresyon örneği**, üretim koduna hardcode e
   otomatik aday ile elle kayıt sayıları ayrı; test sonucu; kalan somut eksikler. PLAN S01/S02
   ancak bu kanıtla işaretlensin. Yeni onay verilmiş gibi yazma.
 
-## Hemen sonraki paket — S03, sona ertelenmeyecek
+## 5. Hemen sonraki paket — S03 / E00–E04, sona ertelenmeyecek
 
 Mevcut Python sayfa modelini küçük C# EPLAN bağdaştırıcısıyla **ayrı test projesine** yaz.
 Önce yüklü P8/SDK ve gerçek hedef sembol kütüphanesini kontrol et; lisans konusunu genel
@@ -84,3 +104,33 @@ tamamlandı” deme. Yalnız resim, DXF veya uydurma sembol numaralı JSON başa
 Mevcut EPLAN kullanıcı nesnelerini değiştirme/silme; yeniden aktarma çakışmalarını önizle.
 
 Tüm 58 sayfanın otomatik kusursuz tanınmasını S03'ün ön koşulu yapma.
+
+## 6. Sonraki kod paketleri — ayrıntı EPLAN_ADDIN_PLAN.md'de
+
+1. **E01:** sözleşme/kanıt/override'ı gerekli ölçüde tamamla. Aynı kaynak örneğinin adı veya
+   konumu değişince kimliği kaybolmasın. Bağlı nesnelerin düzeltmeleri yeniden analizde korunsun.
+2. **E02–E04:** ortam/katalog komutları, ilk ailelerin gerçek pin eşlemesi ve P8 testi. Yerel
+   başvuruda `Project.SymbolLibraries`, `Function.Create(Page, SymbolVariant)` ve
+   `Generate.Connections(Page[], bool)` var; bunları derleyerek/hostta doğrula. T/PE/devam
+   nesneleri için metot veya sembol ID'si uydurma. Grid hatası kaynakta olmayan kısa devre üretmesin.
+3. **S04/E05:** kütüphane ve sahiplik kurallarını bütün seçili şemalara yay. Eksik aileleri
+   sıraya koy; ilk örneği öğret → adayları kendi sayfasından oku → toplu önizle → kontrollü uygula.
+4. **E06–E08:** pano içi varsayılan ve tam sayfa seçeneği, kaynak→hedef sayfa adları, dışarıda
+   kalan devamlar, grafik fallback, dry-run ve gerçek aktarım. Aynı paket NO_OP; kullanıcı
+   değiştirdiğinde çakışma/koruma; yarıda hatada geri okunan net durum. Hiçbir nesne sessiz kaybolmasın.
+5. **E09:** tekrar üretilebilir build, desteklenen P8 sürümü, kurulum/kaldırma ve imzalama
+   adımları. Gizli bilgiyi repoya koyma; müşteri PDF'sini imzalama servisine gönderme.
+6. **S06/E10:** kullanıcı eforu ve yanlış/eksik sayımı. E530'u yalnız ilan edilen ayrılmış
+   değerlendirmede aç; mevcut geliştirme eşiklerini onunla ayarlama.
+
+## Teslim raporu — kısa ama kanıtlı
+
+- Hangi S/E maddesi gerçekten kapandı, hangisi kodlandı ama hostta denenmedi?
+- Kullanıcı hangi ekranda bütün sayfaları görebilir? L1 örneğinin sonucu nedir?
+- Gerçek P8'de hangi sayfa/nesne oluştu; fonksiyon/pin/net geri okuması nerede?
+- Yalnız grafik, açık sorun ve kapsam dışı sayıları ayrı mı?
+- Hangi testler bu oturumda çalıştı? UI/P8 görsel kanıtı ve dosya yolları nedir?
+- Sonraki somut kod işi veya gerçekten gereken tek dış bağımlılık nedir?
+
+Yalnız test sayısı, JSON çıktısı veya HTTP 200 ile “PDF2EPLAN tamamlandı” deme. Kanıtı olan
+küçük teslimleri göstererek devam et; kullanıcıyı yeni bir genel mimari tartışmasına geri götürme.

@@ -1025,7 +1025,9 @@ class RealDocumentTests(unittest.TestCase):
         self.assertEqual(sum(c['count'] for c in d['classes']),d['components'])
         kinds={c['kind']:c['count'] for c in d['classes']}
         # Dolu klemens/diyot gövdeleri tarama çizgisi olarak dışa aktarılmış: iletken değil.
-        self.assertEqual(kinds['SYMBOL_FILL_SCANLINE'],1416)
+        # 2026-09-11: kesikli sınır (y=572.18) ile dikey kesikli koşuların noktasız kesişimi artık
+        # birleştirilmiyor (DASHED_RUN_CROSSING); iki UNEXPLAINED bileşen ayrıldı: 1416 -> 1418.
+        self.assertEqual(kinds['SYMBOL_FILL_SCANLINE'],1418)
         self.assertEqual(kinds['PAGE_FRAME'],1)
         self.assertEqual(kinds['CONDUCTOR_CANDIDATE'],17)
         self.assertEqual(d['dashed_rules']['horizontal'],[440.37,572.18,709.66])
@@ -1038,14 +1040,14 @@ class RealDocumentTests(unittest.TestCase):
         self.assertEqual(above,[[482.89,440.37,507.34,442.85]])
         self.assertEqual(kinds['DASH_ZONE_BOX_EDGE'],86)
         self.assertEqual(kinds['DASH_CONDUCTOR_CANDIDATE'],51)
-        self.assertEqual(kinds['DASH_UNDECIDED'],18)
+        self.assertEqual(kinds['DASH_UNDECIDED'],20)           # +2: yukarıdaki kesişim ayrımı
         self.assertNotIn('DASH_OUT_OF_SCOPE_ZONE_INTERIOR',kinds)
         self.assertFalse(d['production_ready'])
         # Sayfa çerçevesi açık iş sayılmaz ama sınıf dökümünde durur.
         gaps=self.p.table(4)['gaps']
         self.assertNotIn('PAGE_FRAME',[g.get('drawing_class') for g in gaps])
         # Her iletken adayı açık iştir: kesikli PE koşuları ve düz adaylar dahil.
-        self.assertEqual(len(gaps),86)
+        self.assertEqual(len(gaps),88)                         # +2 DASH_UNDECIDED açık iş olarak listede
         self.assertTrue(any(g.get('dash_run')=='y=440.37#0' for g in gaps))
 
     def test_pe_terminals_are_marked_but_stay_untraceable(self):
@@ -1684,6 +1686,421 @@ class RealDocumentTests(unittest.TestCase):
     def test_p03_run_without_index_refuses_cross_page_answers(self):
         with self.assertRaises(ValueError):
             Pilot(RUN).cross_references()
+
+
+
+class DashedCrossingTests(unittest.TestCase):
+    def test_dash_ending_on_a_through_wire_is_a_crossing_not_a_junction(self):
+        # Sayfa 2 bulgusu: PE kesikli rayının bir tiresi N24.30 düşüşünün tam üstünde başlıyordu;
+        # geometri T gördü ve N24.30 ile PE aynı ağa girdi. Koşu iki yanda sürüyorsa bu X'tir.
+        segments=[seg('v',[5,-10],[5,10]),seg('h',[5,0],[15,0])]
+        pins=[dict(id='a',point=[5,10],device='=112+E122-X4',pin='N24.30',kind='PHYSICAL'),
+              dict(id='b',point=[15,0],device='=112+E122-X4',pin='PE',kind='PHYSICAL')]
+        joined=PathGraph(segments,[],pins)
+        self.assertEqual([t['pin_id'] for t in joined.trace('a')['targets']],['b'])
+        split=PathGraph(segments,[],pins,no_join=[(5,0)])
+        self.assertEqual(split.trace('a')['targets'],[])
+        self.assertEqual([c['kind'] for c in split.crossings],['DASHED_RUN_CROSSING'])
+        # Çizilmiş nokta varsa kesişim değil birleşimdir; dış kanıt noktayı ezmez.
+        dotted=PathGraph(segments,[dict(point=[5,0],radius=1.0)],pins,no_join=[(5,0)])
+        self.assertEqual([t['pin_id'] for t in dotted.trace('a')['targets']],['b'])
+
+
+class SchemaRelationTests(unittest.TestCase):
+    """S01 şema ilişkileri gerçek belgede. Sayfa 2/4/5/22 incelendi; kör test değildir."""
+    @classmethod
+    def setUpClass(cls):
+        cls.p=Pilot(RUN5)
+
+    def nets(self,number):
+        return self.p.relations(number)['networks']
+
+    def by_pin(self,number,label):
+        return next(n for n in self.nets(number) if label in [q['label'] for q in n['pins']])
+
+    def test_upper_phases_reach_the_fuse_without_a_fake_device(self):
+        nets=[self.by_pin(4,'-3F22:%d'%i) for i in (1,3,5)]
+        self.assertEqual([n['potential'] for n in nets],['L1','L2','L3'])
+        # Noktasız kesişim ve sigorta gövdesi birleştirmez: üç faz üç ayrı çizilmiş segment kümesi.
+        ids=[set(n['segment_ids']) for n in nets]
+        self.assertFalse(ids[0]&ids[1] or ids[0]&ids[2] or ids[1]&ids[2])
+        self.assertNotIn('-3F22:2',[q['label'] for q in nets[0]['pins']])
+        page={s['id'] for s in self.p._page(4)['segments']}
+        self.assertTrue(set(nets[0]['segment_ids'])<=page)
+        rel=[r for r in self.p.relations(4)['relations'] if r['source']=='-3F22:1']
+        self.assertTrue(rel and all(r['edges'] and r['kind']!='PIN_PIN' for r in rel))
+
+    def test_continuation_is_verified_or_says_why_not(self):
+        l1=self.by_pin(4,'-3F22:1')
+        self.assertIn(('/4.11',5,True),[(c['reference'],c['target_page'],c['verified']) for c in l1['continuations']])
+        l1=self.by_pin(5,'-4F22:1')
+        row=next(c for c in l1['continuations'] if c['reference']=='/5.11')
+        self.assertEqual((row['target_page'],row['status'],row['verified']),(6,'TARGET_PAGE_NOT_TRACED',False))
+
+    def test_station_supplies_are_visible_without_marks(self):
+        nets=self.nets(22)
+        names={n['potential'] for n in nets}
+        self.assertTrue({'P24.30','N24.30'}<=names)
+        self.assertTrue(all(not n['pins'] for n in nets))
+        p24=next(n for n in nets if n['potential']=='P24.30')
+        self.assertEqual(sorted(c['target_page'] for c in p24['continuations']),[13,26])
+
+    def test_port_name_and_shared_terminal_label_do_not_name_a_line(self):
+        # `X1 P1` Ethernet port adıdır; klemens sırasında iki tel arasındaki yazı iki hatta da ad vermez.
+        self.assertNotIn('P1',{n['potential'] for n in self.nets(22)})
+        rejected=[o['rejected_labels'] for n in self.nets(22) for o in n['open_ends'] if o.get('rejected_labels')]
+        self.assertTrue(any('ifade parçası' in r for rows in rejected for r in rows))
+        self.assertEqual(self.by_pin(4,'-X4:PE')['potential'],'PE')
+
+    def test_dashed_pe_rail_does_not_swallow_the_n24_drop(self):
+        n=self.by_pin(2,'-X4:N24.30')
+        self.assertEqual((n['potential'],n['potential_conflict']),('N24.30',[]))
+        self.assertIn((681.31,454.54),[tuple(c['point']) for c in self.p.page_graph(2).crossings
+                                        if c['kind']=='DASHED_RUN_CROSSING'])
+
+    def test_page_index_separates_physical_page_blatt_and_scope(self):
+        idx=self.p.page_index()
+        self.assertEqual((idx['counts']['total'],idx['counts']['default_selected'],len(idx['pages'])),(73,58,73))
+        rows={r['page']:r for r in idx['pages']}
+        self.assertEqual((rows[4]['blatt'],rows[22]['blatt']),('3','11'))
+        # Kapsam filtresi silmez: dışarıdaki sayfa listede, yalnız varsayılan seçimde değil.
+        self.assertFalse(rows[1]['default_selected'])
+        self.assertEqual((rows[22]['state'],rows[22]['marks'],rows[22]['origin']),('PREPARED',0,'RUN'))
+        self.assertEqual(rows[40]['state'],'NOT_PREPARED')
+        model=self.p.page_model(4)
+        self.assertEqual((model['contract'],model['page']['physical_page'],model['page']['blatt']),
+                         ('uvp.pdf2p8.page',4,'3'))
+        self.assertFalse(model['production_released'])
+        self.assertTrue({'PIN','JUNCTION','INTERRUPTION'}<={n['kind'] for n in model['nodes']})
+
+
+class PreparedPageNavigationTests(unittest.TestCase):
+    """İşaretsiz bir sayfayı önbellekte GERÇEKTEN hazırla, gez; eski kayıtlara dokunma."""
+    @classmethod
+    def setUpClass(cls):
+        from analyzer_v3.pagecache import PageCache
+        from analyzer_v3.prepare import digest
+        cls.tmp=Path(tempfile.mkdtemp())
+        manifest=json.loads((RUN5/'manifest.json').read_text(encoding='utf-8'))
+        source=Path(manifest['source_path'])
+        cls.db=RUN5/'annotations.sqlite3'
+        cls.before=digest(cls.db) if cls.db.exists() else None
+        cls.cache=PageCache(source,digest(source),73,root=cls.tmp)
+        cls.cache.enqueue([6]); cls.cache.wait(300)
+        cls.p=Pilot(RUN5,cache=cls.cache)
+
+    @classmethod
+    def tearDownClass(cls):
+        shutil.rmtree(cls.tmp,ignore_errors=True)
+
+    def test_prepared_page_is_viewable_and_readable_without_touching_the_run(self):
+        """SALT OKUMA testi: canlı çalışmaya yazılmaz. İşaretleme yazması ManualMarkingTests'te,
+        kopya çalışmada sınanır."""
+        from analyzer_v3.prepare import digest
+        self.assertEqual(self.cache.state(6),'PREPARED')
+        self.assertIn(6,self.p.viewable_pages())
+        self.assertNotIn(6,self.p.pages())                     # çalışmanın kendi izlediği sayfa değil
+        row=next(r for r in self.p.page_index()['pages'] if r['page']==6)
+        self.assertEqual((row['state'],row['origin'],row['marks']),('PREPARED','CACHE',0))
+        rel=self.p.relations(6)
+        self.assertTrue(rel['networks'])
+        self.assertTrue(all(not n['pins'] for n in rel['networks']))          # pin uydurulmaz
+        # Önbellek sayfası çalışmanın izlenen sayfa listesini DEĞİŞTİRMEZ.
+        self.assertEqual(self.p.manifest['traced_pages'],[2,4,5,22,28,36])
+        if self.before:
+            self.assertEqual(digest(self.db),self.before)                       # eski kayıt aynen
+
+    def test_preparing_the_target_resolves_the_open_continuation(self):
+        l1=next(n for n in self.p.relations(5)['networks']
+                if '-4F22:1' in [q['label'] for q in n['pins']])
+        row=next(c for c in l1['continuations'] if c['reference']=='/5.11')
+        self.assertNotEqual(row['status'],'TARGET_PAGE_NOT_TRACED')
+
+
+class EplanProofPackageTests(unittest.TestCase):
+    """S03 kaynak paketi ve geri okuma karşılaştırması. EPLAN çalıştırmaz."""
+    @classmethod
+    def setUpClass(cls):
+        from analyzer_v3 import eplan_export
+        cls.x=eplan_export
+        cls.pkg=eplan_export.proof_package(Pilot(RUN5))
+
+    def test_package_carries_source_topology_not_target_symbols(self):
+        p=self.pkg
+        self.assertEqual((p['contract'],p['contract_version']),('uvp.pdf2p8.import-request','1.0'))
+        self.assertFalse(p['target_policy']['live_project_writes'])
+        self.assertNotIn('symbol',json.dumps(p))                         # sembol seçimi eşlemede
+        links={frozenset((e['a'],e['b'])) for e in p['expected_links']}
+        self.assertIn(frozenset(('p4:junction:L1','p4:dev:-3F22#1')),links)
+        self.assertIn(frozenset(('p4:dev:-3F22#2','p4:dev:-X1:1#1')),links)
+        ends={o['id']:o for pg in p['pages'] for o in pg['objects'] if o['kind']!='DEVICE'}
+        # Devam paket içinde çift; paket dışına giden uçlar ayrı türde işaretli.
+        self.assertTrue(ends['p4:end:/4.11']['partner_in_package'] and ends['p5:end:/3.19']['partner_in_package'])
+        self.assertEqual(ends['p4:end:/1.110']['kind'],'POTENTIAL_BOUNDARY')
+        self.assertFalse(ends['p5:end:/5.11']['partner_in_package'])
+        self.assertEqual(p['issues'],[])
+        # pt -> mm, sol alt köken: -3F22:1 (142.73, 149.81 pt) sayfa yüksekliği 809.87 pt.
+        fuse=next(o for o in p['pages'][0]['objects'] if o['id']=='p4:dev:-3F22')
+        self.assertEqual(fuse['pins'][0]['point_mm'],[50.352,232.854])
+
+    def test_page_package_splits_poles_and_skips_lines_without_a_device(self):
+        """T3: adlı hat bir CİHAZA girmiyorsa hat aktarılmaz; klemensler yine konur.
+
+        Kullanıcı kuralı (2026-09-12): PE / P24 / N24 sayfada bir cihaza gitmiyorsa yalnız
+        klemens eklensin, ray çizilmesin. Atlama sessiz değildir: gerekçe pakette durur.
+        """
+        pkg=self.x.page_package(Pilot(RUN5),4)
+        objects=pkg['pages'][0]['objects']
+        devices={o['id']:o for o in objects if o['kind']=='DEVICE'}
+        # 3 kutuplu sigorta üç ayrı tek kutuplu nesne; klemens sırasının her ucu ayrı klemens.
+        poles=[o for o in devices.values() if o['device_tag'].endswith('-3F22')]
+        self.assertEqual(sorted([q['name'] for q in o['pins']] for o in poles),
+                         [['1','2'],['3','4'],['5','6']])
+        self.assertTrue(all(o['family']=='fuse_1pole' for o in poles))
+        terminals=[o for o in devices.values() if o['family']=='terminal']
+        self.assertTrue(terminals and all(len(o['pins'])==1 for o in terminals))
+        self.assertIn('contact_no',{o['family'] for o in devices.values()})   # röle kontağı tanındı
+        self.assertFalse([o for o in devices.values() if o['family'].startswith('unmapped')])
+        # Cihaza giden hatlar duruyor…
+        potentials={str(l.get('potential')) for l in pkg['expected_links']}
+        self.assertTrue({'L1','L2','L3','P24.32'} <= potentials)
+        # …cihaza girmeyenler yok ve gerekçesi yazılı.
+        self.assertNotIn('PE',potentials)
+        self.assertNotIn('N24.30',potentials)
+        skipped=[i for i in pkg['issues'] if 'cihaza girmiyor' in i]
+        self.assertTrue(any('PE' in i for i in skipped) and any('N24.30' in i for i in skipped))
+        # Kimlikler tekil (aynı adlı iki klemens ucu dahil).
+        ids=[o['id'] for o in objects]
+        self.assertEqual(len(ids),len(set(ids)))
+
+    def test_parts_list_reads_device_and_type_number_without_guessing(self):
+        """T4: ürün kodu belgenin malzeme listesinden okunur; iç numara koda karışmaz."""
+        from analyzer_v3 import parts
+
+        def row(top, *texts):
+            out, x = [], 10.0
+            for text in texts:
+                out.append(dict(text=text, x0=x, x1=x+len(text)*2.0, top=top, bottom=top+2.0))
+                x += len(text)*2.0 + 4
+            return out
+
+        words = (row(100, '3', '-4F22', 'Sicherung', '5SE2316', 'SIEMENS', '386270')
+                 + row(112, '1', '-17K52', 'Hilfsschütz')          # kod alt satıra taşmış
+                 + row(118, '3RH2122-1BB40', 'SIEMENS')
+                 + row(130, '1', '-X1', 'Klemmenleiste'))          # kodu olmayan satır
+        found = {r['device']: r for r in parts.page_articles(words)}
+        self.assertEqual(found['-4F22']['type_numbers'][0], '5SE2316')
+        self.assertEqual(found['-4F22']['manufacturer'], 'SIEMENS')
+        self.assertNotIn('386270', found['-4F22']['type_numbers'])     # firma iç numarası kod değil
+        self.assertEqual(found['-17K52']['type_numbers'], ['3RH2122-1BB40'])   # taşan hücre birleşti
+        self.assertEqual(found['-X1']['type_numbers'], [])
+        self.assertEqual(found['-X1']['issue'], 'TIP_NUMARASI_OKUNAMADI')      # uydurma yok
+
+    def test_package_says_when_parts_list_pages_are_not_prepared(self):
+        """Liste sayfaları hazırlanmadıysa ürün kodu YOK diye yazılır, boş geçilmez."""
+        pilot = Pilot(RUN5)                                   # önbelleksiz: liste sayfaları hazır değil
+        pkg = self.x.page_package(pilot, 4)
+        devices = [o for o in pkg['pages'][0]['objects'] if o['kind'] == 'DEVICE']
+        self.assertTrue(all(o['part_number'] is None for o in devices))
+        self.assertTrue(any('Malzeme listesi sayfaları hazırlanmadı' in i for i in pkg['issues']))
+
+    def test_compare_reports_missing_extra_and_identity(self):
+        nodes=self.x._nodes(self.pkg)
+        def end(node_id,function=None,pin=None):
+            e=dict(location=nodes[node_id]['mm'])
+            if pin: e.update(function=function,pin=pin)
+            return e
+        rb=dict(pages=[],interruption_points=[],connections=[
+            dict(physical_page=4,start=end('p4:junction:L1'),end=end('p4:dev:-3F22#1','=112+E122-3F22','1')),
+            # yanlış birleşme: T doğrudan klemense
+            dict(physical_page=4,start=end('p4:junction:L1'),end=end('p4:dev:-X1:1#1','=112+E122-X1:1','1')),
+            # kimlik farkı: pin adı yanlış yazılmış
+            dict(physical_page=4,start=end('p4:dev:-3F22#2','=112+E122-3F22','9'),end=end('p4:dev:-X1:1#1','=112+E122-X1:1','1'))])
+        d=self.x.compare(self.pkg,rb)
+        self.assertEqual(d['found'],1)  # Yanlış pinli yol geometrik olarak benziyor; doğru bağ sayılmaz.
+        self.assertIn(['p4:dev:-X1:1#1','p4:junction:L1'],d['extra'])
+        self.assertTrue(any('KİMLİK FARKI' in i['issue'] for i in d['endpoint_issues']))
+        self.assertFalse(d['complete'])
+        self.assertEqual(len(d['missing']),len(self.pkg['expected_links'])-1)
+
+
+class ManualMarkingTests(unittest.TestCase):
+    """Kullanıcının kendi cihaz işareti: öneri, kayıt, mükerrer koruması, geri alma.
+
+    Canlı pilot çalışmasına yazılmaz; her test kendi kopyasında çalışır.
+    """
+    def setUp(self):
+        self.tmp=tempfile.TemporaryDirectory(prefix='uvp-mark-test-')
+        self.run=Path(self.tmp.name)/'run'
+        shutil.copytree(RUN5,self.run)
+        self.p=Pilot(self.run)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_click_proposes_box_pins_and_names_read_from_this_page(self):
+        # Sayfa 4'teki sigorta kutbu: kutu çizimden, adlar sayfanın kendi yazısından.
+        r=self.p.propose_symbol(4,point=[142.73,157.0])
+        self.assertEqual((r['device'],r['device_source']),('=112+E122-3F22','TEMPLATE_OFFSET'))
+        self.assertEqual([q['pin'] for q in r['pins']],['1','2'])
+        # Uçlar var olan işaretin ÜSTÜNE oturur; 1-2 pt kayıp mükerrer kayıt açılmaz.
+        self.assertEqual([q['point'] for q in r['pins']],[[142.73,149.81],[142.73,163.99]])
+        self.assertEqual([q['already_label'] for q in r['pins']],['-3F22:1','-3F22:2'])
+        self.assertFalse(r['stored'])
+        self.assertFalse(r['production_ready'])
+        # Telin üstü sembol değildir: uydurma kutu üretilmez.
+        with self.assertRaises(ValueError):
+            self.p.propose_symbol(4,point=[600.0,86.04])
+        # Kullanıcı kutuyu kendi çizerse de aynı kimlik çözülür.
+        drawn=self.p.propose_symbol(4,bbox=[139.0,148.0,146.0,165.0])
+        self.assertEqual((drawn['box_source'],drawn['device']),('USER_BOX','=112+E122-3F22'))
+
+    def test_mark_saved_on_prepared_page_then_undone_without_deleting_history(self):
+        from analyzer_v3.pagecache import PageCache
+        from analyzer_v3.prepare import digest
+        manifest=json.loads((self.run/'manifest.json').read_text(encoding='utf-8'))
+        source=Path(manifest['source_path'])
+        cache=PageCache(source,digest(source),73,root=Path(self.tmp.name)/'cache')
+        cache.enqueue([6]); cache.wait(300)
+        # Önbellek yokken bu sayfa yazılamaz: çalışmanın izlemediği sayfaya işaret konmaz.
+        with self.assertRaises(ValueError):
+            self.p.change(dict(page=6,device='=112+E122-18K52',pin='13',point=[312.81,270.29],kind='PHYSICAL'))
+        p=Pilot(self.run,cache=cache)
+        r=p.propose_symbol(6,point=[312.81,277.0])
+        self.assertEqual(r['device'],'=112+E122-18K52')                 # ad sayfa 6'nın yazısından
+        self.assertEqual([q['pin'] for q in r['pins']],['13','14'])
+        payload=dict(page=6,bbox=r['bbox'],device=r['device'],
+                     pins=[dict(point=q['point'],pin=q['pin']) for q in r['pins']])
+        saved=p.apply_mark(payload)
+        self.assertEqual(len(saved['created']['pins']),2)
+        self.assertTrue(saved['created']['box'])
+        self.assertEqual({q['method'] for q in p.pins if q.get('page')==6},{'MANUAL'})
+        labels={q['label'] for n in p.relations(6)['networks'] for q in n['pins']}
+        self.assertIn('-18K52:13',labels)
+        # Aynı uca ikinci kayıt açılmaz; boş ad kabul edilmez.
+        with self.assertRaises(ValueError):
+            p.apply_mark(payload)
+        with self.assertRaises(ValueError):
+            p.apply_mark(dict(payload,device='  '))
+        # Yöntem uydurulmaz: elle işaret ile programın bulup kullanıcının seçtiği aday ayrı sayılır.
+        self.assertEqual(saved['method'],'MANUAL')
+        with self.assertRaises(ValueError):
+            p.apply_mark(dict(payload,device='=112+E122-TEST',method='ROBOT'))
+        # Geri alma: kayıt SİLİNMEZ, pasifleşir ve olay geçmişinde durur.
+        pin=saved['created']['pins'][0]
+        p.change(dict(pin,expected_version=pin['version'],active=False))
+        self.assertNotIn(pin['id'],{q['id'] for q in p.pins})
+        self.assertIn(pin['id'],{q['id'] for q in p.retired})
+        self.assertTrue(any(e['record_id']==pin['id'] for e in p.store.events()))
+        self.assertNotIn('-18K52:13',{q['label'] for n in p.relations(6)['networks'] for q in n['pins']})
+
+
+class PageCacheQueueTests(unittest.TestCase):
+    """S01 hazırlama kuyruğu: durdur/devam, hata, yeniden deneme, yarım kalan sayfa.
+
+    Sayfa işleme sahte `trace_page` ile yapılır (kuyruk davranışı test edilir, çizim değil);
+    kaynak PDF gerçek belgedir çünkü kuyruk PDF özetini doğrular.
+    """
+    @classmethod
+    def setUpClass(cls):
+        from analyzer_v3 import pagecache
+        from analyzer_v3.prepare import digest
+        cls.pagecache=pagecache
+        cls.source=Path(json.loads((RUN5/'manifest.json').read_text(encoding='utf-8'))['source_path'])
+        cls.sha=digest(cls.source)
+
+    def setUp(self):
+        self.tmp=Path(tempfile.mkdtemp())
+        self.order=[]; self.fail_pages=set(); self.gate=None
+        self.real=self.pagecache.trace_page
+        def fake(page,folder):
+            number=page.page_number
+            if self.gate is not None and number==2:
+                self.gate.wait(10)
+            self.order.append(number)
+            if number in self.fail_pages:
+                raise RuntimeError('deneme hatası')
+            folder.mkdir(parents=True,exist_ok=True)
+            for name in self.pagecache.FILES:
+                (folder/name).write_bytes(b'x')
+            return dict(render_bbox=[0,0,10,10],width=10,height=10,segments=0,rotation=0)
+        self.pagecache.trace_page=fake
+
+    def tearDown(self):
+        self.pagecache.trace_page=self.real
+        shutil.rmtree(self.tmp,ignore_errors=True)
+
+    def cache(self):
+        return self.pagecache.PageCache(self.source,self.sha,73,root=self.tmp)
+
+    def wait_state(self,cache,number,state):
+        for _ in range(200):
+            if cache.state(number)==state:
+                return
+            threading.Event().wait(0.05)
+        self.fail('sayfa %s %s olmadı'%(number,state))
+
+    def test_failed_page_does_not_stop_queue_and_retry_recovers(self):
+        c=self.cache(); self.fail_pages={3}
+        c.enqueue([2,3,4]); c.wait(30)
+        self.assertEqual([c.state(n) for n in (2,3,4)],['PREPARED','FAILED','PREPARED'])
+        self.assertEqual([f['page'] for f in c.snapshot()['failed']],[3])
+        self.assertIn('deneme hatası',c.entry(3)['error'])
+        self.assertEqual(set(c.prepared()),{2,4})
+        with self.assertRaises(ValueError):
+            c.retry(2)
+        self.fail_pages=set(); c.retry(3); c.wait(30)
+        self.assertEqual(c.state(3),'PREPARED')
+
+    def test_stop_keeps_remaining_queue_and_resume_continues_after_reload(self):
+        c=self.cache(); self.gate=threading.Event()
+        c.enqueue([2,3,4])
+        self.wait_state(c,2,'PREPARING')
+        c.stop(); self.gate.set(); c.wait(30)
+        snap=c.snapshot()
+        self.assertEqual((c.state(2),snap['queue'],snap['stopped']),('PREPARED',[3,4],True))
+        self.assertEqual([c.state(n) for n in (3,4)],['QUEUED','QUEUED'])
+        again=self.cache()                        # sunucu yeniden başladı: kuyruk diskten gelir
+        self.assertEqual(again.snapshot()['queue'],[3,4])
+        again.resume(); again.wait(30)
+        self.assertEqual(set(again.prepared()),{2,3,4})
+        self.assertEqual(self.order,[2,3,4])
+
+    def test_selected_page_jumps_the_queue(self):
+        c=self.cache(); self.gate=threading.Event()
+        c.enqueue([2,3,4])
+        self.wait_state(c,2,'PREPARING')
+        c.enqueue([4],front=True)
+        self.assertEqual(c.snapshot()['queue'],[4,3])
+        self.gate.set(); c.wait(30)
+        self.assertEqual(self.order,[2,4,3])
+
+    def test_interrupted_page_is_requeued_not_counted_prepared(self):
+        (self.tmp/self.sha).mkdir(parents=True)
+        (self.tmp/self.sha/'status.json').write_text(json.dumps(dict(source_sha256=self.sha,queue=[],
+            pages={'5':dict(state='PREPARING')})),encoding='utf-8')
+        c=self.cache()
+        self.assertEqual((c.state(5),c.snapshot()['queue']),('QUEUED',[5]))
+        self.assertNotIn(5,c.prepared())
+
+    def test_prepared_page_with_missing_file_is_not_viewable(self):
+        c=self.cache(); c.enqueue([2]); c.wait(30)
+        self.assertIn(2,c.prepared())
+        (c.page_dir(2)/'geometry.json').unlink()
+        self.assertNotIn(2,c.prepared())
+        self.assertEqual(c.state(2),'FAILED')
+        self.assertEqual([r['page'] for r in c.snapshot()['failed']],[2])
+        self.assertIn('geometry.json',c.entry(2)['error'])
+        with self.assertRaises(ValueError):
+            c.file(2,'page.png')
+        c.retry(2); c.wait(30)
+        self.assertEqual(c.state(2),'PREPARED')
+        self.assertEqual(self.order,[2,2])
+        with self.assertRaises(ValueError):
+            c.file(2,'../status.json')
+        with self.assertRaises(ValueError):
+            c.page_dir(74)
+
 
 
 if __name__=='__main__':

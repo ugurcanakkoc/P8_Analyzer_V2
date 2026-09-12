@@ -3,22 +3,50 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Pano bağlantı çıkarımı — durum</title>
+<title>Pano şema aktarımı — sayfa gezgini</title>
 <link rel="stylesheet" href="/durum.css">
 </head>
 <body>
 <header>
-  <div class="brand">UVP <span>PANO BAĞLANTI ÇIKARIMI</span></div>
+  <div class="brand">UVP <span>PDF → P8 ŞEMA</span></div>
+  <div class="doc">
+    <span id="doc-name" class="muted">belge yükleniyor…</span>
+    <button id="doc-pick" type="button">PDF seç</button>
+  </div>
   <div class="head-right">
-    <label class="sr" for="page">Sayfa</label>
-    <select id="page"></select>
+    <button id="eplan" type="button" disabled title="Sembol eşlemesi ve EPLAN aktarımı bu sürümde yok">
+      EPLAN'a aktar · eşleme/aktarım henüz hazırlanmadı</button>
     <a class="link" href="/ayrinti">Ayrıntılı ekran →</a>
   </div>
 </header>
 
 <div id="error" hidden></div>
+<div id="doc-panel" class="doc-panel" hidden></div>
 
 <main>
+  <!-- ================================================= sayfa gezgini -->
+  <nav class="pages" aria-label="Belge sayfaları">
+    <div class="nav-head">
+      <h3>Sayfalar</h3>
+      <p id="nav-count" class="muted">…</p>
+    </div>
+    <div class="filter" role="group" aria-label="Sayfa filtresi">
+      <button id="f-default" type="button" class="on" aria-pressed="true">Aday şemalar</button>
+      <button id="f-all" type="button" aria-pressed="false">Tümü</button>
+    </div>
+    <div class="queue">
+      <div class="q-line"><span id="q-text">…</span></div>
+      <div class="q-bar" aria-hidden="true"><i id="q-fill"></i></div>
+      <div class="q-buttons">
+        <button id="q-start" type="button">Seçili kapsamı hazırla</button>
+        <button id="q-toggle" type="button" hidden>Durdur</button>
+      </div>
+      <div id="q-failed"></div>
+    </div>
+    <div id="page-list" class="page-list"></div>
+  </nav>
+
+  <!-- ================================================= çizim -->
   <section class="drawing-card">
     <div class="card-head">
       <div>
@@ -26,6 +54,8 @@
         <p id="headline" class="muted">…</p>
       </div>
       <div class="tools">
+        <button id="mark-mode" type="button" aria-pressed="false">Cihaz işaretle</button>
+        <button id="page-json" type="button" title="Bu sayfayı EPLAN'a aktarım paketi olarak yaz">JSON çıkar</button>
         <button id="fit" type="button">Tam sayfa</button>
         <button id="zoom-in" type="button" aria-label="Yakınlaştır">+</button>
         <button id="zoom-out" type="button" aria-label="Uzaklaştır">−</button>
@@ -36,17 +66,39 @@
         <image id="sheet" x="0" y="0" href=""></image>
         <g id="marks"></g>
       </svg>
+      <div id="proposal" class="proposal" hidden></div>
+    </div>
+    <div id="unprepared" class="unprepared" hidden>
+      <p id="unprepared-text"></p>
+      <button id="prepare-one" type="button">Bu sayfayı hazırla</button>
     </div>
     <p class="legend">
-      <span><i class="dot wire"></i> bulunan telin uçları</span>
+      <span><i class="seg-key"></i> vurgulu = çizimin gerçek segmentleri</span>
+      <span><i class="dot wire"></i> tel uçları</span>
       <span><i class="dot net"></i> ortak hat ucu</span>
       <span><i class="dot todo"></i> senin bakman gereken uç</span>
       <span><i class="dash"></i> noktalı bağ = iki ucu eşleştirir, <b>gerçek güzergâh değildir</b></span>
-      <span class="muted right">Bir satıra tıkla → çizimde göster</span>
     </p>
   </section>
 
-  <aside>
+  <!-- ================================================= sağ panel -->
+  <aside id="aside">
+    <section class="panel" id="rel-panel">
+      <h3>Şema ilişkileri <span id="rel-count" class="badge">0</span></h3>
+      <p class="hint">Hatlar, potansiyeller ve sayfa devamları. Fiziksel tel listesi değildir:
+        <code>L1 → -3F22:1</code> ikinci bir cihaz olmadan da bir ilişkidir.
+        Hatta tıkla → gerçek çizgiler; devama tıkla → hedef sayfa.</p>
+      <div id="rels"></div>
+    </section>
+
+    <section class="panel" id="marks-panel">
+      <h3>İşaretlediklerim <span id="mark-count" class="badge">0</span></h3>
+      <p class="hint">Bu sayfadaki cihaz uçları. “Cihaz işaretle”yi açıp çizimdeki cihaza tıkla:
+        program kutusunu ve uçlarını çıkarır, adları bu sayfadan okur; sen onaylarsın.
+        Geri alınan işaret silinmez, pasifleşir.</p>
+      <div id="mark-list"></div>
+    </section>
+
     <section class="panel" id="todo-panel">
       <h3>Senin yapman gerekenler</h3>
       <div id="todo"></div>
@@ -67,7 +119,7 @@
 
     <section class="panel">
       <h3>Yarım kalanlar <span id="single-count" class="badge">0</span></h3>
-      <p class="hint">Bir ucu bilinen, diğer ucu bu sayfada işaretlenmemiş kayıtlar.</p>
+      <p class="hint">Bir ucu işaretli kayıtlar. Karşı taraf bir hat veya sayfa devamıysa burada yazılı.</p>
       <div id="singles"></div>
     </section>
 

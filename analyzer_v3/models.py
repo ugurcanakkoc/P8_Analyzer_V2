@@ -118,9 +118,13 @@ def validate_pin(data, pages):
     method = data.get("method", "MANUAL")
     if method not in MARK_METHODS:
         raise ValueError("İşaretleme yöntemi bilinmiyor.")
+    # Geri alınan işaret SİLİNMEZ: `active=False` ile pasifleşir, kaydı ve olay geçmişi durur.
+    active = data.get("active", True)
+    if not isinstance(active, bool):
+        raise ValueError("İşaret durumu doğru/yanlış olmalı.")
     # The method is recorded for effort measurement; it never turns a proposal into a confirmation.
     return dict({k: data.get(k, "") for k in ("device", "pin", "point", "kind", "note")},
-                page=page, method=method)
+                page=page, method=method, active=active)
 
 
 REVIEW_DECISIONS = {"CONFIRMED", "REJECTED", "NEEDS_MORE_EVIDENCE"}

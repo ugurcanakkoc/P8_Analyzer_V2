@@ -5,7 +5,7 @@ import threading
 from datetime import datetime
 from pathlib import Path
 
-from . import dashed, document
+from . import dashed, document, similarity
 from .document import (XREF, full_device_name, occurrences, reconcile_endpoint,
                        references_for_page, signal_labels, strip_labels, strip_owner,
                        terminal_table)
@@ -38,6 +38,14 @@ SHORT_SEGMENT=12.0   # a bridge this short is re-counted independently of the ta
 LIBRARY_PATH=ROOT/'output'/'library'/'symbols.sqlite3'   # shared by every run, versioned, local
 
 
+EPS_RUN=0.05   # koşu/tel iç noktası payı (pt)
+SYMBOL_STROKE_MAX=30.0   # sembol çizgisi kısadır; bundan uzun çizgi TELdir, kümeye girmez
+SYMBOL_PAD=2.0           # kümeye komşu parça alma payı
+SYMBOL_BOX_MAX=70.0      # küme bu boyutu aşarsa sembol değil, çizim alanı sayılır
+PIN_MERGE=0.5            # aynı uç sayılan mesafe
+DEVICE_TEXT_RADIUS=26.0  # cihaz yazısı arama yarıçapı
+
+
 class Pilot:
     def _artifact(self,name):
         """Evidence files stay inside the run folder; nested page folders are allowed, escapes are not."""
@@ -49,7 +57,7 @@ class Pilot:
             raise ValueError('Geçersiz kanıt dosyası yolu: '+name)
         return path
 
-    def __init__(self, run, verify=True):
+    def __init__(self, run, verify=True, cache=None):
         self.run=Path(run)
         self.manifest=json.loads((self.run/'manifest.json').read_text(encoding='utf-8'))
         if verify:
@@ -72,6 +80,9 @@ class Pilot:
         self._class_cache={}
         self._dash_cache={}
         self.library=SymbolLibrary(LIBRARY_PATH)
+        # İsteğe bağlı sayfa önbelleği (pagecache.PageCache). Regresyon testlerinde yoktur;
+        # sunucu verir. Önbellek sayfaları görüntülenir ama işaret yazılamaz (bkz. pages()).
+        self.cache=cache
 
     def pages(self):
         """Traced sheets and their sizes; a mark outside this set is refused."""
@@ -80,12 +91,38 @@ class Pilot:
             sizes[int(number)]=(info['width'],info['height'])
         return sizes
 
+    def viewable_pages(self):
+        """Görüntülenebilir sayfalar: çalışmanın izlediği + önbellekte hazırlanmış.
+
+        İşaret YAZMA doğrulaması bunu kullanmaz: regresyon pilotunun kaydına yalnız kendi
+        izlediği sayfalarda işaret konur.
+        """
+        sizes=dict(self.pages())
+        if self.cache is not None:
+            for number,size in self.cache.prepared().items():
+                sizes.setdefault(number,size)
+        return sizes
+
+    def page_file(self,number,name):
+        """Bir sayfanın kanıt dosyası: önce çalışmadan, yoksa önbellekten. İkisi de kendi köküne kilitli."""
+        number=int(number)
+        if number in self.pages():
+            prefix='' if number==self.manifest['physical_page'] else 'pages/%s/'%number
+            return self._artifact(prefix+name)
+        if self.cache is not None and number in self.cache.prepared():
+            return self.cache.file(number,name)
+        raise ValueError('Sayfa %s hazırlanmadı; geometrisi yok.'%number)
+
     def _page_signature(self,number,pins,boxes):
         return (json.dumps([p for p in pins if p.get('page',4)==number],sort_keys=True),
                 json.dumps([b for b in boxes if b.get('page',4)==number],sort_keys=True))
 
     def refresh(self):
         revision,pins,boxes,reviews=self.store.snapshot()
+        # Geri alınan işaret SİLİNMEZ: kaydı ve geçmişi durur, yalnız pasif olur ve izleme
+        # ile ilişki hesabına girmez (bkz. models.validate_pin `active`).
+        self.retired=[q for q in pins if not q.get('active',True)]
+        pins=[q for q in pins if q.get('active',True)]
         # Runs prepared before boxes were stored keep their seeded masks as read-only templates.
         known={b['id'] for b in boxes}
         boxes=boxes+[dict(b,version=b.get('version',1)) for b in self.seeds.get('boxes',[]) if b['id'] not in known]
@@ -99,8 +136,7 @@ class Pilot:
             self.graph=self.page_graph(self.manifest['physical_page'])
 
     def _page_curves(self,number):
-        folder,_,_=self._page_source(number)
-        return json.loads(self._artifact(folder+'geometry.json').read_text(encoding='utf-8')).get('curves',[])
+        return json.loads(self.page_file(number,'geometry.json').read_text(encoding='utf-8')).get('curves',[])
 
     def dash_bridges(self,number):
         """Yalnız İNSAN ONAYLI kesikli koşuların kendi iç boşluklarını dolduran köprüler.
@@ -147,8 +183,35 @@ class Pilot:
             self.graphs[number]=PathGraph(self._page(number)['segments']+self.dash_bridges(number),
                                           dots,
                                           [p for p in self.pins if p.get('page',4)==number],
-                                          [b for b in self.boxes if b.get('page',4)==number and b.get('active',True)])
+                                          [b for b in self.boxes if b.get('page',4)==number and b.get('active',True)],
+                                          no_join=self._run_crossings(number))
         return self.graphs[number]
+
+    def _run_crossings(self,number):
+        """Ölçülmüş kesikli koşuyu noktasız, BOYDAN BOYA geçen tellerin kesişim noktaları.
+
+        Yalnız koşunun iç kısmı (iki yanda da sürüyor) ve telin iç kısmı (tel orada bitmiyor)
+        sayılır. Koşuda biten veya koşunun ucuna gelen tel T'dir; ona dokunulmaz.
+        """
+        from .geometry import pt
+        byid={s['id']:s for s in self._page(number)['segments']}
+        out=[]
+        for run in self._dash_runs(number):
+            for sid in run['crossings_without_dot']:
+                s=byid.get(sid)
+                if s is None:
+                    continue
+                if run['axis']=='y':
+                    point,along,ends=(s['a'][0],run['coord']),s['a'][0],(s['a'][1],s['b'][1])
+                    across=run['coord']
+                else:
+                    point,along,ends=(run['coord'],s['a'][1]),s['a'][1],(s['a'][0],s['b'][0])
+                    across=run['coord']
+                inside_run=run['start']+EPS_RUN<along<run['end']-EPS_RUN
+                through=min(ends)+EPS_RUN<across<max(ends)-EPS_RUN
+                if inside_run and through:
+                    out.append(pt(point))
+        return out
 
     def _trace(self,pid):
         byid={p['id']:p for p in self.pins}
@@ -238,7 +301,15 @@ class Pilot:
             result=find_similar(box,marks,page['segments'],page['words'],page['render_bbox'],marks,
                                 curves=self._page_curves(number))
             result['page']=number
+            strips=document.strip_labels(page['words'],page['render_bbox'])
+            bars=document.module_bars(page['segments'])
             for c in result['candidates']:
+                # Cihaz adı ŞABLONDAN kopyalanmaz: bu sayfanın kendi yazısından çözülür.
+                # Belge indeksi olmayan eski çalışmada ad tamamlanamaz; aday adsız kalır, düşmez.
+                if self.document is not None:
+                    self._name_from_strip(c,strips,page['render_bbox'],number,bars,page['words'],page['segments'])
+                else:
+                    c.setdefault('issues',[]).append('DEVICE_NAME_UNRESOLVED_NO_DOCUMENT_INDEX')
                 for p in c['pins']:
                     # A proposed identity is never treated as scope-verified until the user saves it.
                     p['template_device_in_scope']=in_scope(p['template_device'])
@@ -383,10 +454,10 @@ class Pilot:
         bütün belgenin bitmesini beklemez.
         """
         if pages is not None:
-            wanted=[int(n) for n in pages] if pages!='ALL' else sorted(self.pages())
+            wanted=[int(n) for n in pages] if pages!='ALL' else sorted(self.viewable_pages())
             out,found,missing=[],0,[]
             for n in wanted:
-                if n not in self.pages():
+                if n not in self.viewable_pages():
                     missing.append(n)
                     continue
                 one=self.library_candidates(entry_id,n)
@@ -402,7 +473,7 @@ class Pilot:
             self.refresh()
             entry=self.library.get(entry_id)
             number=int(number or self.manifest['physical_page'])
-            if number not in self.pages():
+            if number not in self.viewable_pages():
                 raise ValueError('Bu çalışmada izlenmeyen sayfa: %s'%number)
             page=self._page(number)
             marks=[p for p in self.pins if p.get('page',4)==number]
@@ -528,20 +599,22 @@ class Pilot:
         if number==self.manifest['physical_page']:
             return '','',self.manifest['render_bbox']
         info=self.manifest.get('page_artifacts',{}).get(str(number))
-        if not info:
-            raise ValueError('Sayfa %s bu çalışmada izlenmedi; geometrisi yok.'%number)
-        return 'pages/%s/'%number,'pages/%s/'%number,info['render_bbox']
+        if info:
+            return 'pages/%s/'%number,'pages/%s/'%number,info['render_bbox']
+        if self.cache is not None and number in self.cache.prepared():
+            return None,None,self.cache.entry(number)['render_bbox']
+        raise ValueError('Sayfa %s bu çalışmada izlenmedi; geometrisi yok.'%number)
 
     def _page(self,number):
         if number not in self._page_cache:
-            folder,_,bbox=self._page_source(number)
+            _,_,bbox=self._page_source(number)
             # words.json holds reading-order text; older runs fall back to the raw extraction.
-            words=folder+'words.json'
-            if not (self.run/words).exists():
-                words=folder+'raw_page.json'
+            words=self.page_file(number,'words.json')
+            if not words.exists():
+                words=self.page_file(number,'raw_page.json')
             self._page_cache[number]=dict(
-                segments=json.loads(self._artifact(folder+'geometry.json').read_text(encoding='utf-8'))['segments'],
-                words=json.loads(self._artifact(words).read_text(encoding='utf-8'))['words'],render_bbox=bbox)
+                segments=json.loads(self.page_file(number,'geometry.json').read_text(encoding='utf-8'))['segments'],
+                words=json.loads(words.read_text(encoding='utf-8'))['words'],render_bbox=bbox)
         return self._page_cache[number]
 
     def _dash_run_end(self,number,ends,centre):
@@ -614,10 +687,13 @@ class Pilot:
         with self.lock:
             index=self._index()
             source=int(number or self.manifest['physical_page'])
-            if source not in self.pages():
+            if source not in self.viewable_pages():
                 raise ValueError('Bu çalışmada izlenmeyen sayfa: %s'%source)
             page=next(p for p in index if p['physical_page']==source)
+            # Çalışmanın izlediği sayfalar (manifest) + önbellekte hazırlanmış sayfalar.
             traced=set(self.manifest.get('traced_pages',[source]))
+            if self.cache is not None:
+                traced|=set(self.cache.prepared())
             rows=[]
             for ref in references_for_page(source,index):
                 row=dict(text=ref['text'],kind=ref['kind'],target_pages=ref['target_pages'],
@@ -641,7 +717,8 @@ class Pilot:
                 target=ref['target_pages'][0]
                 if target not in traced:
                     rows.append(dict(row,status='TARGET_PAGE_NOT_TRACED',
-                                     note='Hedef sayfanın geometrisi bu çalışmada yok; --pages ile hazırlanmalı.'))
+                                     note='Hedef sayfanın geometrisi bu çalışmada yok; --pages ile '
+                                          'veya sayfa gezgininden hazırlanmalı.'))
                     continue
                 facts=next(p for p in index if p['physical_page']==target)
                 back=[r for r in facts['cross_references']
@@ -1419,7 +1496,7 @@ class Pilot:
             self.refresh()
             index=self._index()
             number=int(number or self.manifest['physical_page'])
-            if number not in self.pages():
+            if number not in self.viewable_pages():
                 raise ValueError('Bu çalışmada izlenmeyen sayfa: %s'%number)
             page=next(p for p in index if p['physical_page']==number)
             graph=self.page_graph(number)
@@ -1602,7 +1679,7 @@ class Pilot:
                 elif waiting:
                     parts.append('%d tanesi onay bekliyor'%waiting)
                 headline=', '.join(parts)+'.'
-            return dict(page=number,pages=sorted(self.pages()),
+            return dict(page=number,pages=sorted(self.viewable_pages()),
                         page_label='%s · %s · Blatt %s (fiziksel sayfa %d)'
                                    %(facts.get('anlage') and '='+facts['anlage'] or '?',
                                      facts.get('einbauort') and '+'+facts['einbauort'] or '?',
@@ -1636,11 +1713,375 @@ class Pilot:
                         note='Bu ekran yalnız gösterir. İlişki teyidi, yeniden inceleme ve üretime '
                              'uygunluk AYRI sayılır; üretim/EPLAN aktarımı kapalıdır.')
 
+    # ================================================================ S01: bütün sayfa gezgini
+    def page_index(self):
+        """Belgenin BÜTÜN sayfaları: fiziksel sıra, Blatt, yapı, tür, kapsam, hazırlık durumu.
+
+        Varsayılan şema filtresi IN_SCOPE Schaltplan'dır; sayı belge indeksinden SAYILIR, sabit
+        yazılmaz. "Hazırlanmadı", "hazırlandı / işaret yok" ve "hazırlandı / işaretli" ayrı
+        durumlardır; hiçbir sayfa "çözüldü" diye işaretlenmez.
+        """
+        with self.lock:
+            self.refresh()
+            index=self._index()
+            run=self.pages()
+            viewable=self.viewable_pages()
+            marks=Counter(q.get('page',4) for q in self.pins)
+            rows=[]
+            for facts in index:
+                n=facts['physical_page']
+                if n in run:
+                    state,origin='PREPARED','RUN'
+                    info=self.manifest.get('page_artifacts',{}).get(str(n))
+                    segments=(info or {}).get('segments',len(self.geometry['segments']) if n==self.manifest['physical_page'] else None)
+                elif n in viewable:
+                    state,origin='PREPARED','CACHE'
+                    segments=self.cache.entry(n).get('segments')
+                else:
+                    state=self.cache.state(n) if self.cache is not None else 'NOT_PREPARED'
+                    origin,segments=None,None
+                rows.append(dict(page=n,blatt=facts.get('blatt'),anlage=facts.get('anlage'),
+                                 einbauort=facts.get('einbauort'),doc_type=facts.get('doc_type'),
+                                 scope=facts.get('scope'),issues=list(facts.get('issues') or []),
+                                 default_selected=(facts.get('doc_type')=='Schaltplan'
+                                                   and facts.get('scope')=='IN_SCOPE'),
+                                 state=state,origin=origin,segments=segments,marks=marks.get(n,0),
+                                 error=(self.cache.entry(n).get('error') if self.cache is not None
+                                        and state=='FAILED' else None)))
+            counts=dict(total=len(rows),
+                        default_selected=sum(1 for r in rows if r['default_selected']),
+                        prepared=sum(1 for r in rows if r['state']=='PREPARED'),
+                        prepared_default=sum(1 for r in rows if r['state']=='PREPARED' and r['default_selected']),
+                        marked=sum(1 for r in rows if r['marks']),
+                        failed=sum(1 for r in rows if r['state']=='FAILED'))
+            return dict(pages=rows,counts=counts,
+                        queue=self.cache.snapshot() if self.cache is not None else None,
+                        cache_enabled=self.cache is not None,production_ready=False,
+                        note='Varsayılan seçim IN_SCOPE Schaltplan sayfalarıdır; diğer sayfalar bağlam '
+                             'olarak açılabilir ama otomatik şema aktarımına seçili gelmez. Hazırlanmış '
+                             'sayfa yalnız geometri taşır; işaret, inceleme veya onay taşımaz.')
+
+    def prepare_request(self,payload):
+        """Hazırlama kuyruğu komutu. Pilot çalışmasına YAZMAZ; yalnız sayfa önbelleğine."""
+        if self.cache is None:
+            raise ValueError('Sayfa önbelleği bu sunucuda kapalı.')
+        action=payload.get('action','enqueue')
+        if action=='enqueue':
+            pages=payload.get('pages')
+            if (not isinstance(pages,list) or not pages or len(pages)>self.cache.page_count
+                    or not all(isinstance(n,int) and not isinstance(n,bool) for n in pages)):
+                raise ValueError('Sayfa listesi geçersiz.')
+            added=self.cache.enqueue(pages,front=bool(payload.get('front')))
+            return dict(self.cache.snapshot(),added=added)
+        if action=='stop':
+            return self.cache.stop()
+        if action=='resume':
+            return self.cache.resume()
+        if action=='retry':
+            page=payload.get('page')
+            if not isinstance(page,int) or isinstance(page,bool):
+                raise ValueError('Sayfa numarası geçersiz.')
+            return dict(self.cache.snapshot(),added=self.cache.retry(page))
+        raise ValueError('Bilinmeyen hazırlama komutu.')
+
+    # ================================================================ S01: şema ilişkileri
+    def relations(self,number=None):
+        """Şema ilişkileri: pin→pin, pin→potansiyel, pin→sayfa devamı, gerçek birleşim, açık uç.
+
+        Bu bir FİZİKSEL TEL listesi değildir; iki cihaz pini şartı yoktur. `L1 → -3F22:1`
+        ikinci bir cihaz olmadan anlamlı bir şema ilişkisidir ve potansiyel sahte cihaz/pin
+        olarak kaydedilmez. Her ilişki gerçek segment kimlikleri ve kenar koordinatlarıyla gelir;
+        düz yardımcı çizgi yolun yerine geçmez.
+
+        Potansiyel adı yalnız o hattın KENDİ ucuna basılı yazıdan veya o uçtaki doğrulanmış sayfa
+        devamından gelir. Aynı ad tek başına iki ayrı hattı BİRLEŞTİRMEZ: her ağ kendi çizilmiş
+        segment kümesiyle tanımlanır. Bir ağda iki farklı ad okunursa ad verilmez, çelişki yazılır.
+        """
+        from .models import device_tail
+        from .document import classify_label
+        with self.lock:
+            self.refresh()
+            number=int(number or self.manifest['physical_page'])
+            if number not in self.viewable_pages():
+                raise ValueError('Sayfa %s hazırlanmadı; önce sayfa gezgininden hazırlayın.'%number)
+            page=self._page(number)
+            rb=page['render_bbox']
+            graph=self.page_graph(number)
+            byid={p['id']:p for p in self.pins}
+            marks=[q for q in self.pins if q.get('page',4)==number]
+            try:
+                conts=self.continuations(number)['rows']
+            except ValueError:
+                conts=[]
+            cont_ends=[(r['source_end']['point'],r) for r in conts if r.get('source_end')]
+            dots=[d['point'] for d in dashed.junction_dots(self._page_curves(number))]
+
+            def poly(path):
+                return [[round(e['a'][0],2),round(e['a'][1],2),round(e['b'][0],2),round(e['b'][1],2)]
+                        for e in path]
+
+            def seg_ids(path):
+                return [e['segment_id'] for e in path]
+
+            def label(q):
+                return '-%s:%s'%(device_tail(q['device']),q['pin'])
+
+            def cont_at(point):
+                return [r for p,r in cont_ends if abs(p[0]-point[0])<=0.5 and abs(p[1]-point[1])<=0.5]
+
+            def near_text(point):
+                best=None
+                for w in page['words']:
+                    cx=(w['x0']+w['x1'])/2-rb[0]
+                    cy=(w['top']+w['bottom'])/2-rb[1]
+                    d=max(abs(cx-point[0]),abs(cy-point[1]))
+                    if d<=14 and (best is None or d<best[0]):
+                        best=(d,w['text'])
+                return best[1] if best else None
+
+            segs=page['segments']
+
+            def label_owner(lab,point,horizontal):
+                """Uçtaki yazı bu hattın mı? Yalnız sahipliği TEK anlamlı olan yazı ad verir.
+
+                Ret 1 — ifade parçası: yazının aynı satırında bitişik başka kelime var (`X1 P1`
+                port adıdır, `P1` potansiyeli değil). Ret 2 — komşu hat: aynı yönde başka bir çizgi
+                yazıya bu hat kadar yakın (klemens sırasında `N24.30` yazısı iki telin arasında durur;
+                hangisinin olduğu yakınlıktan seçilmez). Reddedilen yazı silinmez, nedenle döner.
+                """
+                x0,y0,x1,y1=lab['box'][0]-rb[0],lab['box'][1]-rb[1],lab['box'][2]-rb[0],lab['box'][3]-rb[1]
+                along_x=(x1-x0)>=(y1-y0)
+                thick=min(x1-x0,y1-y0) or 1.0
+                for w in page['words']:
+                    a0,b0,a1,b1=w['x0']-rb[0],w['top']-rb[1],w['x1']-rb[0],w['bottom']-rb[1]
+                    if abs(a0-x0)<0.01 and abs(b0-y0)<0.01:
+                        continue
+                    if along_x:
+                        cross=min(y1,b1)-max(y0,b0); gap=max(a0-x1,x0-a1)
+                    else:
+                        cross=min(x1,a1)-max(x0,a0); gap=max(b0-y1,y0-b1)
+                    if cross>=0.5*thick and gap<1.2*thick:
+                        return 'ifade parçası (%s %s)'%(lab['text'],w['text'])
+                if horizontal:
+                    lo,hi,own,span=y0,y1,point[1],(x0,x1)
+                else:
+                    lo,hi,own,span=x0,x1,point[0],(y0,y1)
+
+                def dist(v):
+                    return max(lo-v,v-hi,0.0)
+                d_own=dist(own)
+                for sg in segs:
+                    (ax,ay),(bx,by)=sg['a'],sg['b']
+                    if horizontal and abs(ay-by)<0.01:
+                        v,r0,r1=ay,min(ax,bx),max(ax,bx)
+                    elif not horizontal and abs(ax-bx)<0.01:
+                        v,r0,r1=ax,min(ay,by),max(ay,by)
+                    else:
+                        continue
+                    if abs(v-own)<=0.5 or min(r1,span[1])-max(r0,span[0])<=0:
+                        continue
+                    if dist(v)<=d_own+6.0:
+                        return 'komşu hatla paylaşılıyor'
+                return None
+
+            def classify_end(point,path):
+                found=cont_at(point)
+                if found:
+                    r=found[0]
+                    match=(r.get('candidates') or [None])[0] or {}
+                    # Devam eşleşmesi kablo damar kimliğini (`112/3W67:9`) kanıt olarak kullanabilir;
+                    # bu bir POTANSİYEL ADI DEĞİLDİR (MAIN 2026-09-10 §5). Ağa ad yalnız POTENTIAL
+                    # türündeki yazıdan verilir; diğerleri türüyle ayrı alanda durur.
+                    signal=r.get('source_signal')
+                    signal_kind=classify_label(signal) if signal else None
+                    return dict(kind='CONTINUATION',point=[round(point[0],2),round(point[1],2)],
+                                potential=signal if signal_kind=='POTENTIAL' else None,
+                                signal=signal,signal_kind=signal_kind,
+                                reference=r['text'],status=r['status'],
+                                target_page=r.get('target_page') or (r.get('target_pages') or [None])[0],
+                                target_reference=match.get('reference'),
+                                target_end=(match.get('end') or {}).get('point'),
+                                verified=r['status']=='RECIPROCAL_END_MATCHED')
+                last=path[-1] if path else None
+                horizontal=bool(last) and abs(last['a'][1]-last['b'][1])<0.01
+                found=signal_labels(page['words'],(point[0]+rb[0],point[1]+rb[1]),
+                                    *((45.0,8.0) if horizontal else (8.0,45.0)),kinds=('POTENTIAL',))
+                rejected=[]
+                for lab in list(found):
+                    why=label_owner(lab,point,horizontal)
+                    if why:
+                        found.remove(lab); rejected.append('%s: %s'%(lab['text'],why))
+                if found:
+                    names=sorted({l['text'] for l in found})
+                    return dict(kind='POTENTIAL',point=[round(point[0],2),round(point[1],2)],
+                                potential=found[0]['text'],ambiguous_names=names if len(names)>1 else [],
+                                label_box=found[0]['box'])
+                return dict(kind='OPEN_END',point=[round(point[0],2),round(point[1],2)],potential=None,
+                            nearby_text=near_text(point),rejected_labels=rejected,
+                            reason=('Uçtaki yazı sahipliği belirsiz (%s); ad verilmedi.'%'; '.join(rejected))
+                                   if rejected else
+                                   'Uçta potansiyel yazısı veya doğrulanmış sayfa devamı yok; '
+                                   'uç bilinmiyor, uydurulmadı.')
+
+            networks={}
+
+            def network(trace):
+                key=frozenset(e['segment_id'] for e in trace['edges'])
+                if key not in networks:
+                    networks[key]=dict(id='net:%d:%d'%(number,len(networks)+1),segment_ids=sorted(key),
+                                       edges=poly(trace['edges']),pins=[],ends={},junctions={},paths={})
+                return networks[key]
+
+            def add_trace(net,trace):
+                for oe in trace['open_ends']:
+                    point=tuple(oe['point'])
+                    end=classify_end(oe['point'],oe.get('path') or [])
+                    net['ends'].setdefault(point,end)
+                for bp in trace['branch_points']:
+                    kind=('DRAWN_DOT' if any(abs(d[0]-bp[0])<=0.6 and abs(d[1]-bp[1])<=0.6 for d in dots)
+                          else 'T_GEOMETRY')
+                    net['junctions'].setdefault(tuple(bp),dict(point=[round(bp[0],2),round(bp[1],2)],
+                                                               evidence=kind))
+
+            relations,seen=[],set()
+            # (a) İşaretli pinlerden: pin→pin ve pinin ağının uçları.
+            for q in marks:
+                trace=graph.trace(q['id'])
+                if not trace['edges']:
+                    continue
+                net=network(trace)
+                if q['id'] not in net['pins']:
+                    net['pins'].append(q['id'])
+                add_trace(net,trace)
+                net['paths'][q['id']]={tuple(oe['point']):oe.get('path') or [] for oe in trace['open_ends']}
+                for target in trace['targets']:
+                    other=byid.get(target['pin_id'])
+                    pair=tuple(sorted((q['id'],target['pin_id'])))
+                    if other is None or pair in seen:
+                        continue
+                    seen.add(pair)
+                    relations.append(dict(kind='PIN_PIN',network=net['id'],source=label(q),source_pin_id=q['id'],
+                                          target=label(other),target_pin_id=other['id'],
+                                          segment_ids=seg_ids(target['path']),edges=poly(target['path']),
+                                          note='Çizimde iki pin arası yol. Fiziksel tel/imalat kararı değildir.'))
+            # (b) İşaretsiz uçlar: sayfa devamı ucundan izleme. Pin UYDURULMAZ; ağ görünür olur.
+            for point,row in cont_ends:
+                if any(tuple(point) in net['ends'] for net in networks.values()):
+                    continue
+                trace=graph.trace_from_point(point)
+                if not trace['edges']:
+                    continue
+                net=network(trace)
+                net['ends'].setdefault(tuple(point),classify_end(point,[]))
+                add_trace(net,trace)
+                for target in trace['targets']:
+                    if target['pin_id'] in byid and target['pin_id'] not in net['pins']:
+                        net['pins'].append(target['pin_id'])
+
+            out=[]
+            for net in networks.values():
+                ends=list(net['ends'].values())
+                names=sorted({e['potential'] for e in ends if e['kind']!='OPEN_END' and e.get('potential')})
+                potential=names[0] if len(names)==1 else None
+                pins=[byid[pid] for pid in net['pins'] if pid in byid]
+                for q in pins:
+                    paths=net['paths'].get(q['id'],{})
+                    for end in ends:
+                        path=paths.get(tuple(end['point']),[])
+                        kind={'CONTINUATION':'PIN_CONTINUATION','POTENTIAL':'PIN_POTENTIAL',
+                              'OPEN_END':'PIN_OPEN_END'}[end['kind']]
+                        relations.append(dict(kind=kind,network=net['id'],source=label(q),source_pin_id=q['id'],
+                                              potential=end.get('potential'),target=end,
+                                              segment_ids=seg_ids(path) or net['segment_ids'],
+                                              edges=poly(path) or net['edges']))
+                out.append(dict(id=net['id'],potential=potential,
+                                potential_conflict=names if len(names)>1 else [],
+                                pins=[dict(id=q['id'],label=label(q),device=q['device'],pin=q['pin'],
+                                           point=q['point'],method=q.get('method','MANUAL')) for q in pins],
+                                continuations=[e for e in ends if e['kind']=='CONTINUATION'],
+                                potential_anchors=[e for e in ends if e['kind']=='POTENTIAL'],
+                                open_ends=[e for e in ends if e['kind']=='OPEN_END'],
+                                junctions=list(net['junctions'].values()),
+                                segment_ids=net['segment_ids'],edges=net['edges'],
+                                issues=(['POTENTIAL_NAMES_DISAGREE'] if len(names)>1 else [])
+                                       +(['UNKNOWN_OPEN_END'] if any(e['kind']=='OPEN_END' for e in ends) else [])))
+            out.sort(key=lambda n:(n['potential'] is None,n['potential'] or '',n['id']))
+            counts=Counter(r['kind'] for r in relations)
+            return dict(page=number,networks=out,relations=relations,
+                        summary=dict(networks=len(out),
+                                     named_networks=sum(1 for n in out if n['potential']),
+                                     pin_pin=counts['PIN_PIN'],pin_potential=counts['PIN_POTENTIAL'],
+                                     pin_continuation=counts['PIN_CONTINUATION'],
+                                     pin_open_end=counts['PIN_OPEN_END'],
+                                     junctions=sum(len(n['junctions']) for n in out),
+                                     unknown_open_ends=sum(len(n['open_ends']) for n in out),
+                                     marks=len(marks)),
+                        production_ready=False,
+                        note='Şema ilişkisidir, fiziksel tel değildir. Potansiyel adı yalnız hattın kendi '
+                             'ucundaki yazıdan veya doğrulanmış sayfa devamından okunur; aynı ad ayrı '
+                             'hatları birleştirmez. Birleşim: DRAWN_DOT çizilmiş nokta, T_GEOMETRY uç uca T.')
+
+    # ================================================================ S02: küçük sayfa modeli
+    def page_model(self,number=None):
+        """Sözleşme `uvp.pdf2p8.page` 1.0 — BİZİM uygulamamızın sözleşmesi, EPLAN import formatı değil.
+
+        Kaynak gözlemi (PDF), kullanıcı/aday işareti (SQLite, sürümlü) ve standart yorumu ayrı
+        alanlardır; biri diğerinin üstüne yazılmaz. Bilinmeyen değer null + gerekçedir.
+        """
+        with self.lock:
+            rel=self.relations(number)
+            number=rel['page']
+            facts=next((q for q in self._index() if q['physical_page']==number),{})
+            size=self.viewable_pages()[number]
+            _,_,bbox=self._page_source(number)
+            nodes,seen=[],set()
+
+            def add(node):
+                if node['id'] not in seen:
+                    seen.add(node['id'])
+                    nodes.append(node)
+            for q in [q for q in self.pins if q.get('page',4)==number]:
+                add(dict(id='pin:'+q['id'],kind='PIN',device=q['device'],pin=q['pin'],point=q['point'],
+                         source_kind=q.get('method','MANUAL'),version=q.get('version'),
+                         raw_value=dict(device=q['device'],pin=q['pin'])))
+            for net in rel['networks']:
+                for j in net['junctions']:
+                    add(dict(id='junction:%s:%s'%tuple(j['point']),kind='JUNCTION',point=j['point'],
+                             evidence=j['evidence'],network=net['id']))
+                for e in net['continuations']:
+                    add(dict(id='interruption:%s:%s'%tuple(e['point']),kind='INTERRUPTION',point=e['point'],
+                             raw_value=e['reference'],potential=e.get('potential'),
+                             target_page=e.get('target_page'),verified=e.get('verified'),network=net['id']))
+                for e in net['potential_anchors']:
+                    add(dict(id='potential:%s:%s'%tuple(e['point']),kind='POTENTIAL_ANCHOR',point=e['point'],
+                             raw_value=e['potential'],ambiguous_names=e.get('ambiguous_names'),network=net['id']))
+                for e in net['open_ends']:
+                    add(dict(id='open:%s:%s'%tuple(e['point']),kind='OPEN_END',point=e['point'],
+                             nearby_text=e.get('nearby_text'),reason=e['reason'],network=net['id']))
+            used={i for net in rel['networks'] for i in net['segment_ids']}
+            segments=[dict(id=s['id'],a=s['a'],b=s['b'],dash=bool(s.get('dash')),source=s.get('source'))
+                      for s in self._page(number)['segments'] if s['id'] in used]
+            return dict(contract='uvp.pdf2p8.page',contract_version='1.0',
+                        document_sha256=self.manifest['source_sha256'],
+                        page=dict(physical_page=number,blatt=facts.get('blatt'),anlage=facts.get('anlage'),
+                                  einbauort=facts.get('einbauort'),doc_type=facts.get('doc_type'),
+                                  scope=facts.get('scope'),width=size[0],height=size[1],render_bbox=bbox,
+                                  coordinate_space='PDFPLUMBER_ROTATED_TOP_LEFT_MINUS_RENDER_BBOX',
+                                  unit='pt'),
+                        nodes=nodes,segments=segments,networks=rel['networks'],relations=rel['relations'],
+                        overrides=dict(store='annotations.sqlite3',kind='VERSIONED_EVENT_LOG',
+                                       note='Kullanıcı ve aday işaretleri çıkarımdan ayrı, sürümlü kayıttır; '
+                                            'yeniden analiz onları ezmez.'),
+                        production_released=False,
+                        issues=[i for net in rel['networks'] for i in net['issues']])
+
+
     def state(self):
         with self.lock:
             self.refresh()
             return dict(manifest=self.manifest,revision=self.revision,pins=self.pins,claims=self.claims(),
                         pages={str(k):v for k,v in self.pages().items()},boxes=self.boxes,
+                        viewable={str(k):v for k,v in self.viewable_pages().items()},
                         reviews=self.review_status(),
                         templates=[dict(id=b['id'],bbox=b['bbox'],page=b.get('page',4),source=b['source'],
                                         note=b.get('note',''),version=b['version'])
@@ -1653,6 +2094,307 @@ class Pilot:
                              scopes={s:sum(1 for p in self.document['pages'] if p['scope']==s)
                                      for s in {p['scope'] for p in self.document['pages']}}),
                         production_ready=False)
+
+    def package_request(self,payload=None):
+        """S03 kanıt paketini üret ve yolunu döndür. EPLAN'a hiçbir şey yazmaz.
+
+        Paket bizim sözleşmemizdir; hedef sembol eşlemesi AYRI dosyadır ve katalog alınmadan
+        yazılamaz. Panel bu yolu EPLAN köprüsüne verir; aktarımı add-in yapar.
+        """
+        from . import eplan_export
+        payload=payload or {}
+        if payload.get('page'):
+            number=int(payload['page'])
+            package=eplan_export.page_package(self,number)
+            target=ROOT/'output'/'exchange'/('sayfa_%d.json'%number)
+            target.parent.mkdir(parents=True,exist_ok=True)
+            target.write_text(json.dumps(package,ensure_ascii=False,indent=1),encoding='utf-8')
+            mapping=ROOT/'output'/'exchange'/'proof_s03'/'mapping.json'
+            return dict(package=str(target),mapping=str(mapping) if mapping.exists() else None,
+                        pages=[number],objects=len(package['pages'][0]['objects']),
+                        expected_links=len(package['expected_links']),issues=package['issues'],
+                        note='Sayfa paketi yazıldı. EPLAN\'da UvpSayfaAktar.cs ile bu dosyayı seç.')
+        pages=tuple(int(n) for n in (payload.get('pages') or (4,5)))
+        package=eplan_export.proof_package(self,pages=pages)
+        target=ROOT/'output'/'exchange'/'proof_s03'/'package.json'
+        target.parent.mkdir(parents=True,exist_ok=True)
+        target.write_text(json.dumps(package,ensure_ascii=False,indent=1),encoding='utf-8')
+        mapping=ROOT/'output'/'exchange'/'proof_s03'/'mapping.json'
+        return dict(package=str(target),mapping=str(mapping) if mapping.exists() else None,
+                    pages=list(pages),objects=sum(len(q['objects']) for q in package['pages']),
+                    expected_links=len(package['expected_links']),issues=package['issues'],
+                    note='Paket yazıldı. Sembol eşlemesi yoksa aktarım yapılmaz; önce EPLAN '
+                         'kataloğu alınıp eşleme yazılmalıdır.')
+
+    def similar(self,box_id,pages=None):
+        """Bu sembolün AYNI ŞEKLİNİ başka sayfalarda ara. Hiçbir şey kaydedilmez.
+
+        Şablon, kullanıcının işaretlediği kutunun kendi çizimi ve kendi pinlerinden kurulur.
+        Her sayfada ad ve pin yazıları O SAYFANIN kendi yazısından okunur; şablondan kopyalanmaz.
+        Yalnız hazırlanmış sayfalar taranır; taranmamış sayfa "yok" demek DEĞİLDİR ve listelenir.
+        """
+        with self.lock:
+            self.refresh()
+            box=next((b for b in self.boxes if b['id']==box_id),None)
+            if box is None:
+                raise ValueError('Şablon kutusu bulunamadı.')
+            if not box.get('active',True):
+                raise ValueError('Bu kutu pasif; şablon olarak kullanılmıyor.')
+            home=box.get('page',4)
+            source=self._page(home)
+            home_marks=[q for q in self.pins if q.get('page',4)==home]
+            template=build_template(box,home_marks,source['segments'],source['words'],
+                                    source['render_bbox'],curves=self._page_curves(home))
+            desc=descriptor(template)
+            viewable=sorted(self.viewable_pages())
+            if pages in (None,'ALL'):
+                wanted,skipped=viewable,[]
+            else:
+                wanted=[int(n) for n in pages]
+                skipped=[n for n in wanted if n not in viewable]
+                wanted=[n for n in wanted if n in viewable]
+            results,total=[],0
+            for number in wanted:
+                page=self._page(number)
+                marks=[q for q in self.pins if q.get('page',4)==number]
+                found=search_similar(desc,page['segments'],page['words'],page['render_bbox'],
+                                     marks,self._page_curves(number))
+                strips=document.strip_labels(page['words'],page['render_bbox'])
+                bars=document.module_bars(page['segments'])
+                for candidate in found['candidates']:
+                    candidate['page']=number
+                    candidate['template_box']=box_id
+                    candidate['discovery_source']='USER_MARKED_TEMPLATE'
+                    if self.document is not None:
+                        self._name_from_strip(candidate,strips,page['render_bbox'],number,bars,
+                                              page['words'],page['segments'])
+                    for pin in candidate['pins']:
+                        pin['template_device']=''
+                        pin['template_pin']=''
+                total+=len(found['candidates'])
+                results.append(dict(page=number,candidates=found['candidates'],
+                                    rejected=len(found['rejected'])))
+            return dict(template_box=box_id,template_page=home,pages=wanted,
+                        unprepared_pages=[n for n in range(1,self.manifest['page_count']+1)
+                                          if n not in viewable],
+                        requested_but_unprepared=skipped,results=results,candidates_total=total,
+                        applied_changes=False,production_ready=False,
+                        limitation='Yalnız ÖTELEME eşleşmesi; döndürülmüş/aynalanmış örnek bulunmaz. '
+                                   'Hazırlanmamış sayfa taranmadı — "orada yok" anlamına gelmez. '
+                                   'Aday kayıt değildir: uygulamayı kullanıcı seçer.')
+
+    # ================================================================ elle cihaz işaretleme
+    def _shapes(self,number):
+        """Sembol olabilecek KISA çizim parçaları. Uzun çizgi teldir; kümeye alınmaz."""
+        page=self._page(number)
+        out=[]
+        for seg in page['segments']:
+            (ax,ay),(bx,by)=seg['a'],seg['b']
+            if seg.get('dash') or max(abs(ax-bx),abs(ay-by))>SYMBOL_STROKE_MAX:
+                continue
+            out.append(dict(id=seg['id'],kind='segment',
+                            bbox=[min(ax,bx),min(ay,by),max(ax,bx),max(ay,by)]))
+        for curve in self._page_curves(number):
+            box=curve.get('bbox')
+            if not box:
+                continue
+            box=[min(box[0],box[2]),min(box[1],box[3]),max(box[0],box[2]),max(box[1],box[3])]
+            if max(box[2]-box[0],box[3]-box[1])>SYMBOL_STROKE_MAX:
+                continue
+            out.append(dict(id=curve['id'],kind='curve',bbox=box))
+        return out
+
+    @staticmethod
+    def _box_distance(box,point):
+        return max(box[0]-point[0],point[0]-box[2],0.0)+max(box[1]-point[1],point[1]-box[3],0.0)
+
+    def _cluster_box(self,shapes,point):
+        """Tıklanan noktadaki şeklin kutusu: en yakın parçadan başlayıp komşularını toplar."""
+        near=sorted(((self._box_distance(sh['bbox'],point),index,sh)
+                     for index,sh in enumerate(shapes)),key=lambda r:(r[0],r[1]))
+        if not near or near[0][0]>6.0:
+            raise ValueError('Tıklanan yerde sembol çizimi yok. Kutuyu elle çizebilirsiniz.')
+        used=[near[0][2]]
+        seen={id(near[0][2])}
+        box=list(near[0][2]['bbox'])
+        changed=True
+        while changed:
+            changed=False
+            for sh in shapes:
+                if id(sh) in seen:
+                    continue
+                b=sh['bbox']
+                if (b[0]>box[2]+SYMBOL_PAD or b[2]<box[0]-SYMBOL_PAD
+                        or b[1]>box[3]+SYMBOL_PAD or b[3]<box[1]-SYMBOL_PAD):
+                    continue
+                merged=[min(box[0],b[0]),min(box[1],b[1]),max(box[2],b[2]),max(box[3],b[3])]
+                if merged[2]-merged[0]>SYMBOL_BOX_MAX or merged[3]-merged[1]>SYMBOL_BOX_MAX:
+                    continue
+                box,changed=merged,True
+                seen.add(id(sh))
+                used.append(sh)
+        return [round(box[0]-1.0,2),round(box[1]-1.0,2),round(box[2]+1.0,2),round(box[3]+1.0,2)],used
+
+    @staticmethod
+    def _wire_pins(segments,box):
+        """Kutuya giren tellerin sınırdaki uçları. Kutu içinde kalan çizgi uç üretmez."""
+        points=[]
+        for seg in segments:
+            (ax,ay),(bx,by)=seg['a'],seg['b']
+            inside_a=box[0]<=ax<=box[2] and box[1]<=ay<=box[3]
+            inside_b=box[0]<=bx<=box[2] and box[1]<=by<=box[3]
+            if inside_a==inside_b:
+                continue
+            if abs(ax-bx)<0.01:
+                x=ax
+                if not box[0]-0.5<=x<=box[2]+0.5:
+                    continue
+                y=box[1] if min(ay,by)<box[1] else box[3]
+            elif abs(ay-by)<0.01:
+                y=ay
+                if not box[1]-0.5<=y<=box[3]+0.5:
+                    continue
+                x=box[0] if min(ax,bx)<box[0] else box[2]
+            else:
+                continue
+            point=[round(x,2),round(y,2)]
+            if not any(abs(q[0]-point[0])<=PIN_MERGE and abs(q[1]-point[1])<=PIN_MERGE for q in points):
+                points.append(point)
+        return sorted(points,key=lambda q:(q[1],q[0]))
+
+    @staticmethod
+    def _snap(segments,marks,point,tol=2.5):
+        """Önerilen ucu GERÇEK noktaya oturt: önce var olan işaret, sonra telin kendi ucu.
+
+        Kutu sınırındaki kesişim 1-2 pt kayabilir; kaydırılmadan kaydedilirse aynı uca ikinci
+        bir kayıt açılır. Yakında kanıt yoksa nokta olduğu gibi kalır.
+        """
+        near=[m['point'] for m in marks
+              if abs(m['point'][0]-point[0])<=tol and abs(m['point'][1]-point[1])<=tol]
+        if near:
+            return [round(near[0][0],2),round(near[0][1],2)]
+        ends=[e for seg in segments for e in (seg['a'],seg['b'])
+              if abs(e[0]-point[0])<=tol and abs(e[1]-point[1])<=tol]
+        if ends:
+            best=min(ends,key=lambda e:abs(e[0]-point[0])+abs(e[1]-point[1]))
+            return [round(best[0],2),round(best[1],2)]
+        return point
+
+    def propose_symbol(self,number=None,point=None,bbox=None):
+        """Tıklanan (veya çizilen) yerdeki cihaz ÖNERİSİ: kutu, uçlar ve sayfadan okunan adlar.
+
+        Hiçbir şey kaydedilmez. Ad ve pin yazıları BU SAYFANIN kendi yazısından okunur; komşu
+        sayfadan, şablondan veya kütüphaneden kopyalanmaz. Okunamayan ad boş döner ve
+        `identity_resolved` yanlış olur — uydurulmaz.
+        """
+        from .models import device_tail
+        with self.lock:
+            self.refresh()
+            number=int(number or self.manifest['physical_page'])
+            if number not in self.viewable_pages():
+                raise ValueError('Sayfa %s hazırlanmadı; önce sayfa gezgininden hazırlayın.'%number)
+            page=self._page(number)
+            rb=page['render_bbox']
+            if bbox is None:
+                if not point:
+                    raise ValueError('Nokta veya kutu gerekir.')
+                point=[float(point[0]),float(point[1])]
+                box,used=self._cluster_box(self._shapes(number),point)
+                evidence=[dict(id=sh['id'],kind=sh['kind']) for sh in used]
+                source='CLICK_CLUSTER'
+            else:
+                box=[round(min(float(bbox[0]),float(bbox[2])),2),round(min(float(bbox[1]),float(bbox[3])),2),
+                     round(max(float(bbox[0]),float(bbox[2])),2),round(max(float(bbox[1]),float(bbox[3])),2)]
+                if box[2]-box[0]<=0.5 or box[3]-box[1]<=0.5:
+                    raise ValueError('Kutu çok küçük.')
+                evidence,source=[],'USER_BOX'
+            marks=[q for q in self.pins if q.get('page',4)==number]
+            found=[self._snap(page['segments'],marks,q) for q in self._wire_pins(page['segments'],box)]
+            pins=[]
+            for q in found:
+                rivals=[tuple(o) for o in found if o!=q]
+                hit=similarity.nearest_word(page['words'],rb,tuple(q),11.0,others=rivals)
+                existing=[m for m in marks if abs(m['point'][0]-q[0])<=0.6 and abs(m['point'][1]-q[1])<=0.6]
+                pins.append(dict(point=q,pin=hit[1]['text'] if hit else '',
+                                 pin_source='PAGE_LABEL' if hit else None,
+                                 external_lines=len(similarity.attached(page['segments'],tuple(q))),
+                                 already_marked=[m['id'] for m in existing],
+                                 already_label=('-%s:%s'%(device_tail(existing[0]['device']),existing[0]['pin']))
+                                               if existing else None))
+            # Maske kutusu UÇLARIN ÜSTÜNE oturur: uç kutunun içinde kalırsa dış tel de maskeye
+            # girer ve pin hiçbir çizgiye bağlanamaz (NO_LINE_AT_PIN). Kutu yalnız daraltılır.
+            for q in pins:
+                x,y=q['point']
+                if 0<=y-box[1]<=1.6: box[1]=y
+                if 0<=box[3]-y<=1.6: box[3]=y
+                if 0<=x-box[0]<=1.6: box[0]=x
+                if 0<=box[2]-x<=1.6: box[2]=x
+            box=[round(v,2) for v in box]
+            candidate=dict(bbox=box,pins=[dict(point=q['point'],page_pin_texts=[q['pin']] if q['pin'] else [])
+                                          for q in pins],page_device_texts=[])
+            tags=[]
+            for w in page['words']:
+                if document.classify_label(w['text'])!='DEVICE_TAG':
+                    continue
+                centre=[(w['x0']+w['x1'])/2-rb[0],(w['top']+w['bottom'])/2-rb[1]]
+                distance=self._box_distance(box,centre)
+                if distance<=DEVICE_TEXT_RADIUS:
+                    tags.append((distance,w['text']))
+            if tags:
+                candidate['page_device_texts']=[min(tags,key=lambda r:r[0])[1]]
+            strips=document.strip_labels(page['words'],rb)
+            self._name_from_strip(candidate,strips,rb,number,document.module_bars(page['segments']),
+                                  page['words'],page['segments'])
+            issues=list(candidate.get('issues') or [])
+            if not pins:
+                issues.append('NO_WIRE_AT_SYMBOL')
+            return dict(page=number,bbox=box,box_source=source,shape_evidence=evidence,
+                        device=candidate.get('device_name') or '',
+                        device_printed=candidate.get('device_printed'),
+                        device_source=candidate.get('device_source'),
+                        device_inherited=candidate.get('device_inherited') or [],
+                        identity_resolved=bool(candidate.get('identity_resolved')),
+                        pins=pins,issues=issues,stored=False,production_ready=False,
+                        note='Öneridir. Cihaz ve pin adları bu sayfanın yazısından okundu; '
+                             'kaydedilmeden hiçbir kayıt oluşmaz, onay sayılmaz.')
+
+    def apply_mark(self,payload):
+        """Onaylanan öneriyi kaydet: sembol maskesi + uçlar. Yöntem MANUAL (kullanıcı işareti).
+
+        Önce hepsi doğrulanır, sonra yazılır. Aynı noktaya ikinci uç açılmaz (mükerrer koruması
+        `change` içindedir). Onay/üretim kararı AYRIDIR: işaret koymak onay değildir.
+        """
+        with self.lock:
+            number=int(payload.get('page') or self.manifest['physical_page'])
+            if number not in self.viewable_pages():
+                raise ValueError('Sayfa %s hazırlanmadı.'%number)
+            device=(payload.get('device') or '').strip()
+            rows=payload.get('pins') or []
+            # Yöntem ayrı sayılır: elle konan işaret ile programın bulup kullanıcının seçtiği
+            # aday aynı kovaya girmez (effort ölçümü bunun üstünde durur).
+            method=payload.get('method') or 'MANUAL'
+            if method not in ('MANUAL','P04_CANDIDATE'):
+                raise ValueError('Bilinmeyen işaretleme yöntemi: %s'%method)
+            if not device:
+                raise ValueError('Cihaz adı boş olamaz; okunamadıysa siz yazın.')
+            if not rows:
+                raise ValueError('En az bir uç gerekir.')
+            for row in rows:
+                if not isinstance(row,dict) or not row.get('point'):
+                    raise ValueError('Uç kaydı eksik.')
+                if not str(row.get('pin','')).strip():
+                    raise ValueError('Uç adı boş olamaz: %s'%(row.get('point'),))
+            created={'box':None,'pins':[]}
+            if payload.get('bbox'):
+                created['box']=self.change_box(dict(page=number,bbox=payload['bbox'],
+                                                    note='Elle işaretlenen cihaz: '+device,active=True))
+            for row in rows:
+                created['pins'].append(self.change(dict(page=number,device=device,
+                                                        pin=str(row['pin']).strip(),point=row['point'],
+                                                        kind=row.get('kind') or 'PHYSICAL',
+                                                        method=method,note=payload.get('note',''))))
+            return dict(page=number,device=device,method=method,created=created,
+                        note='Kullanıcı işareti kaydedildi. Onay/üretim kararı ayrıdır.')
 
     def change(self,payload):
         with self.lock:
@@ -1669,7 +2411,16 @@ class Pilot:
                     raise ValueError('Bu noktada zaten bir uç var: %s:%s (%s). Mükerrer kayıt '
                                      'açılmaz; düzeltmek için mevcut kaydı seçin.'
                                      %(clash['device'],clash['pin'],clash['id']))
-            result=self.store.change(payload,self.pages())
+            pages=self.viewable_pages()
+            if payload.get('id') and payload.get('active') is False:
+                # Geri alma HER ZAMAN mümkün olmalı: sayfası şu an hazırlanmamış olsa bile
+                # kullanıcı yanlış işareti pasifleştirebilir. Kaydın kendi sayfası eklenir.
+                old=next((q for q in list(self.pins)+list(getattr(self,'retired',[]))
+                          if q['id']==payload['id']),None)
+                if old is not None and old.get('page',4) not in pages:
+                    pages=dict(pages)
+                    pages[old.get('page',4)]=(old['point'][0]+1.0,old['point'][1]+1.0)
+            result=self.store.change(payload,pages)
             # A mark on a sheet suspends every review that depends on that sheet.
             self.store.mark_stale([result['page']],'PIN_CHANGED',self.revision)
             self.refresh()
@@ -1743,7 +2494,7 @@ class Pilot:
 
     def change_box(self,payload):
         with self.lock:
-            result=self.store.change_box(payload,self.pages())
+            result=self.store.change_box(payload,self.viewable_pages())
             self.store.mark_stale([result['page']],'SYMBOL_BOX_CHANGED',self.revision)
             self.refresh()
             return result

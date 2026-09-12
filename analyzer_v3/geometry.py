@@ -110,7 +110,11 @@ def ends_near(segments, point, dx=45.0, dy=8.0):
 
 
 class PathGraph:
-    def __init__(self, raw_segments, dots, pins, boxes=()):
+    def __init__(self, raw_segments, dots, pins, boxes=(), no_join=()):
+        # no_join: dış kanıtla KESİŞİM olduğu ölçülmüş noktalar. Kesikli bir koşunun tiresi tam
+        # geçen bir telin üzerinde biterse geometri T gibi görünür; koşu iki yanda sürdüğü için
+        # bu noktasız bir X'tir ve birleştirilmez (bkz. dashed.rulings crossings_without_dot).
+        no_join = {pt(p) for p in no_join}
         self.raw_count = len(raw_segments)
         self.excluded, self.segments = [], []
         self.pins = {p["id"]: p for p in pins}
@@ -172,6 +176,9 @@ class PathGraph:
                     four_way_cache[p]=four_way(p)
                 if kind!='COLLINEAR' and not dotted and (kind=='X' or four_way_cache.get(p)):
                     self.crossings.append({"point": p, "segments": [a["id"], b["id"]], "kind": "UNJOINED_X"})
+                    continue
+                if kind=='T_OR_END' and not dotted and p in no_join:
+                    self.crossings.append({"point": p, "segments": [a["id"], b["id"]], "kind": "DASHED_RUN_CROSSING"})
                     continue
                 cuts[i].add(p)
                 cuts[j].add(p)
@@ -282,7 +289,10 @@ class PathGraph:
             if len(neighbours) > 2:
                 result["branch_points"].append(self.coords[n])
             if len(neighbours) == 1 and n != start and not other_pins:
-                result["open_ends"].append({"point": self.coords[n], "reason": "UNMARKED_END_OR_CONTINUATION"})
+                # The drawn path to the open end is kept: a pin→potential / pin→continuation relation
+                # must be shown with its REAL segments, not with a straight helper line.
+                result["open_ends"].append({"point": self.coords[n], "reason": "UNMARKED_END_OR_CONTINUATION",
+                                            "path": paths[n]})
             for m, edge in self.adj[n]:
                 key = (edge["segment_id"], pt(edge["a"]), pt(edge["b"]))
                 if key not in visited_edges:

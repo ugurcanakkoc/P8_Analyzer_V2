@@ -21,3 +21,7 @@ node_modules/
 .serena/
 *.sqlite3
 *.log
+
+# Ekran goruntuleri: musteri ciziminin render'i olabilir.
+*.png
+*.jpg

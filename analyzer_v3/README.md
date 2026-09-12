@@ -8,7 +8,9 @@ sayfa önizlemesi öngörülür. 37 sütunlu tel Excel'i ikincil çıktıdır.
 **Mevcut kod henüz EPLAN sayfası oluşturmuyor.** Aşağıdaki bölümler mevcut/eski pilot
 özelliklerinin tarihçesini de içerir; eski “yalnız bağlantı / cihazlar kullanıcıdan” ifadesi
 yeni hedefi sınırlamaz. Yeni geliştirme [PLAN.md](../PLAN.md) S01–S06 ve
-[CLAUDE_NEXT.md](../CLAUDE_NEXT.md) ile yürütülür. Bu belge değişikliği işaret/onay veya
+[CLAUDE_NEXT.md](../CLAUDE_NEXT.md) ile yürütülür. Eklentinin veri kaynakları, sözleşmesi ve
+kodlama/test alt işleri [EPLAN_ADDIN_PLAN.md](../EPLAN_ADDIN_PLAN.md) içinde tanımlıdır.
+Bu belge değişikliği işaret/onay veya
 üretim durumunu değiştirmez.
 
 ## Çalıştırma

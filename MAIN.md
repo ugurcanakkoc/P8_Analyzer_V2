@@ -1211,5 +1211,22 @@ hedef/kapsam yorumlarına göre önceliklidir; eski kararları silmez veya geçm
 - Yeni hedef ilk olarak ayrı test projesinde sınanır. Mevcut EPLAN projesine toplu yazma,
   kullanıcıya ait nesneleri değiştirme/silme ve üretime bırakma ayrı açık kapsam gerektirir.
 
+## 6. EPLAN API satın alımı ve eklenti sorumluluğu
+
+- Kullanıcı **EPLAN API satın alacağını** bildirmiştir. Bu planlanan bağımlılıktır; satın
+  alma/kurulum tamamlandı veya yazma yetkisi doğrulandı diye raporlanmaz. Satın alma tercihi
+  yeniden sorulmaz. Geliştirme/test, SDK ve kendi eklentisinin runtime/imzalama gereklilikleri
+  teslim kontrolüne alınır; lisans anahtarı/kimlik bilgisi sohbette veya repoda istenmez.
+- Python mevcut PDF çıkarımını ve kaynak şema modelini üretir; ayrı C# EPLAN add-in'i gerçek
+  hedef kütüphane/fonksiyon/pin bilgilerini okur, önizlenen seçili taslağı aktarır ve sonucu
+  geri okur. Sembol/pin/API kimlikleri uydurulmaz; Excel şema aktarımının ara formatı değildir.
+- Eklentide veri kaynağı, aile→hedef sembol eşlemesi, kapsam, koordinat/pin hizası, devamlar,
+  önizleme, tekrar aktarım ve kullanıcı değişikliğini koruma kuralları zorunludur.
+- SDK/host eksikliği bağımsız Python/sözleşme işlerini durdurmaz. Ancak mock test, DLL'nin
+  diskte bulunması veya JSON üretimi gerçek EPLAN aktarımı kanıtı sayılmaz.
+- Ayrıntılı kodlama şartnamesi `EPLAN_ADDIN_PLAN.md`, Claude çalışma talimatı `CLAUDE_NEXT.md`.
+  Kullanıcı bunların Claude tarafından kodlanmasını istemiştir. Bu, mevcut canlı EPLAN
+  projesine sınırsız yazma/silme veya kullanıcı adına şema/üretim onayı verme izni değildir.
+
 Uygulama sırası PLAN.md'nin en başındaki güncel bölümdedir. Bu kural değişikliği tek başına
 uygulama kodunu, eski Excel'leri, canlı işaretleri veya EPLAN projesini değiştirmiş sayılmaz.

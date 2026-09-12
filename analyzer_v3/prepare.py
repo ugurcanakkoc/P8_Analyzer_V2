@@ -6,6 +6,7 @@ import importlib.metadata
 import json
 from pathlib import Path
 import platform
+import shutil
 
 import pdfplumber
 
@@ -193,6 +194,75 @@ def prepare(run, extra_pages=()):
     from .store import PinStore
     seeded=json.loads((run/'seeds.json').read_text(encoding='utf-8'))
     PinStore(run).initialize(seeded['pins'],seeded['boxes'])
+    return run
+
+
+def open_pdf(pdf_path, root=None, primary=None):
+    """Kullanıcının seçtiği PDF için YENİ çalışma klasörü. Pilot çalışmalarına dokunmaz.
+
+    Tohum YOKTUR: işaret, kutu, teyit ve çizilmiş nokta boş başlar — bu belgeye başka belgenin
+    onayı taşınmaz. Aynı PDF ikinci kez açılırsa (aynı sha256) var olan klasör kullanılır;
+    işaretler korunur. Yalnız BİR sayfanın geometrisi çıkarılır (ilk şema sayfası); kalan
+    sayfalar sayfa önbelleğinden istendikçe hazırlanır.
+    """
+    source = Path(pdf_path).resolve()
+    if not source.is_file() or source.suffix.lower() != '.pdf':
+        raise ValueError('PDF dosyası bulunamadı: %s' % pdf_path)
+    sha = digest(source)
+    root = Path(root) if root else ROOT/'output'/'documents'
+    run = root/sha[:16]
+    if (run/'manifest.json').exists():
+        return run
+    if run.exists():
+        raise ValueError('Yarım kalmış çalışma klasörü var, elle bakın: %s' % run)
+    staging = run.with_name(run.name + '.tmp')
+    if staging.exists():
+        shutil.rmtree(staging)
+    staging.mkdir(parents=True)
+    with pdfplumber.open(source) as pdf:
+        pages = build_index([oriented_words(page) for page in pdf.pages])
+        if primary is None:
+            schematics = [row['physical_page'] for row in pages if row.get('doc_type') == 'Schaltplan']
+            primary = schematics[0] if schematics else 1
+        primary = int(primary)
+        if not 1 <= primary <= len(pdf.pages):
+            raise ValueError('Sayfa numarası belgede yok: %s' % primary)
+        page = pdf.pages[primary-1]
+        info = trace_page(page, staging)
+        bbox = info['render_bbox']
+        write_json(staging/'document_index.json',
+                   dict(source_sha256=sha, page_count=len(pdf.pages), traced_pages=[primary],
+                        extraction='pdfplumber.extract_words + title block labels',
+                        limitation='Çizgi geometrisi yalnız traced_pages için; kalan sayfalar '
+                                   'sayfa önbelleğinden hazırlanır. İşaret yoktur: bu belge yeni açıldı.',
+                        pages=pages))
+        write_json(staging/'inventory.json',
+                   [dict(physical_page=i+1, width=q.width, height=q.height, rotation=q.rotation,
+                         mediabox=q.mediabox, cropbox=q.cropbox, bbox=q.bbox, analyzed=(i+1 == primary))
+                    for i, q in enumerate(pdf.pages)])
+        write_json(staging/'seeds.json', dict(pins=[], boxes=[], claims=[], dots=[]))
+        row = next((r for r in pages if r['physical_page'] == primary), {})
+        manifest = dict(schema_version=1, created_utc=datetime.now(timezone.utc).isoformat(),
+                        source_path=str(source), source_sha256=sha, physical_page=primary,
+                        blatt=row.get('blatt'), page_count=len(pdf.pages),
+                        width=bbox[2]-bbox[0], height=bbox[3]-bbox[1], render_bbox=bbox,
+                        page_bbox=page.bbox, mediabox=page.mediabox, cropbox=page.cropbox,
+                        rotation=page.rotation, dpi=300, pixel_width=info['pixel_width'],
+                        pixel_height=info['pixel_height'],
+                        coordinate_space='PDFPLUMBER_ROTATED_TOP_LEFT_MINUS_RENDER_BBOX',
+                        python=platform.python_version(),
+                        dependencies={q: importlib.metadata.version(q)
+                                      for q in ['pdfplumber', 'pypdfium2', 'Pillow']},
+                        traced_pages=[primary], page_artifacts={},
+                        mode='USER_DOCUMENT_NO_SEEDED_MARKS', production_ready=False)
+        names = ['geometry.json', 'seeds.json', 'raw_page.json', 'words.json', 'page.png',
+                 'inventory.json', 'document_index.json']
+        manifest['artifact_sha256'] = {name: digest(staging/name) for name in names}
+        manifest['code_sha256'] = {q.name: digest(q) for q in (ROOT/'analyzer_v3').glob('*.py')}
+        write_json(staging/'manifest.json', manifest)
+    from .store import PinStore
+    PinStore(staging).initialize([], [])
+    staging.rename(run)                     # manifest tamamlanmadan klasör adı kesinleşmez
     return run
 
 

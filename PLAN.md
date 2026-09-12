@@ -11,7 +11,8 @@ eski sıra aşağıda tarihçe olarak korunur; eski “şema/cihaz oluşturma ka
 yeni hedef için geçerli değildir. 37 sütunlu Excel ikincil imalat görünümüdür.
 
 Teknik karar ve araştırma: [Yeni akış ve EPLAN yaklaşımı](output/research/2026-09-11_PDF2EPLAN_Yon_Degisikligi.md).
-Claude'a ilk uygulama görevi: [CLAUDE_NEXT.md](CLAUDE_NEXT.md).
+Eklenti/veri sözleşmesi şartnamesi: [EPLAN_ADDIN_PLAN.md](EPLAN_ADDIN_PLAN.md).
+Claude'a uçtan uca kodlama görevi: [CLAUDE_NEXT.md](CLAUDE_NEXT.md).
 
 ### Bugün doğrulanan başlangıç (yeni geliştirme yapılmış sayılmaz)
 
@@ -27,6 +28,10 @@ Claude'a ilk uygulama görevi: [CLAUDE_NEXT.md](CLAUDE_NEXT.md).
   uçlarda L1 adını buluyor. **Eksik: geometri + hat kimliği + sunumun birleştirilmesi.**
 - Son uygulayıcı raporu: 121 test, 30 tel çifti. Bu yön değişikliği turunda testler yeniden
   çalıştırılmadı; yeni şema akışının başarısı olarak sayılmayacak.
+- Yerelde P8 **2026.0.3.25702** ve aynı sürüm API DLL/XML başvuruları mevcut. Standart
+  `dotnet --list-sdks` kontrolü boş çıktı; başka build aracı yok sonucu çıkarılmadı.
+  EPLAN eklenti yüklemesi/yazma yetkisi denenmedi. Kullanıcı API satın alacağını bildirdi;
+  geliştirme/test ve runtime/imzalama teslimi planlanan bağımlılık, mevcut yetki iddiası değil.
 
 ### Kullanıcının göreceği akış
 
@@ -38,7 +43,7 @@ EPLAN'a aktar → EPLAN'da düzenle. Köprü imalat biçimi ve üretim onayı so
 
 | ID | İş | Somut teslim / kabul |
 |---|---|---|
-| S00 | **Hedefi ve kuralları güncelle** | **Tamam (yalnız belgeler):** MAIN, bu sıra ve araştırma/ilk Claude görevi güncel. Eski veriye yeni onay verilmedi. |
+| S00 | **Hedefi ve kuralları güncelle** | **Tamam (yalnız belgeler):** MAIN, bu sıra, araştırma, EPLAN_ADDIN_PLAN ve Claude uçtan uca görevi güncel. Eski veriye yeni onay verilmedi. |
 | S01 | **Tüm sayfalarda gezinme + üst besleme ilişkileri** | 73 sayfa seçicide görünür; varsayılan 58 aday şema filtresi. Hazırlanmamış sayfa “boş/çözüldü” görünmez. Seçili sayfa önizlemesi öncelikli, kalan seçili şemalar durdurulabilir/devam edilebilir sırada hazırlanır. `L1→3F22:1` ve `L1→4F22:1`, L2/3 ve P24/N24 gerçek segmentleriyle görünür; fiziksel tel kararı aranmaz. |
 | S02 | **Sayfa şema modeli ve düzeltme akışı** | Pinler yanında potansiyel, bara, birleşim, devam, açık sınır ve grafik nesneleri kimliklidir. Gerçek polyline/topoloji saklanır; üretim satırından şema türetilmez. Kullanıcı nesne/etiket/hat düzeltir; sürümlü düzeltme yeniden analizde ezilmez. S01'de yalnız gereken en küçük modeli başlat, büyük çatı kurma. |
 | S03 | **Erken EPLAN aktarım kanıtı** | Bütün PDF tanımasını beklemeden ayrı test projesinde küçük gerçek bölge: L1→sigorta, sigorta→klemens, T dalı ve devam. Gerçek EPLAN fonksiyon/pin/bağlantıları oluşur, özellikleri düzenlenebilir; EPLAN'dan geri okunan kimlik ve topoloji kaynak modelle karşılaştırılır. Çalışan P8'de doğrulanmadan tamam işareti yok. |
@@ -46,9 +51,58 @@ EPLAN'a aktar → EPLAN'da düzenle. Köprü imalat biçimi ve üretim onayı so
 | S05 | **Seçili sayfalarla P8 taslak teslimi** | Sembol eşleme sürümü, kapsam filtresi, sayfa adları, aktarım önizlemesi, çakışma/tekrar aktarım koruması ve geri okuma raporu. Desteklenmeyen bölge açıkça grafik/elle tamamlama; sessiz kayıp yok. Pano içi varsayılan, tam sayfa seçenekli. Üretim onayı ve otomatik köprü seçimi yok. |
 | S06 | **Kullanılabilirlik ve ikinci TROESTER sınaması** | Sayfa başına operatör düzeltme süresi, tanınan/düzeltilen/belirsiz nesne ve yanlış/eksik ağ ilişkileri ölçülür. Ayrılmış E530 verisi ancak ilan edilen değerlendirmede açılır. Aynı sayfa/şekil kopyası kör test diye sunulmaz. |
 
-Durum: **S01–S06 henüz uygulanmadı.** Eski pilot yetenekleri bunlara girdi sağlar; otomatik
-olarak tamamlandı sayılmaz. İlk sonraki kod teslimi S01 + S02'nin gerekli küçük çekirdeği;
-hemen ardından S03. Tüm 58 sayfanın kusursuz tanınmasını beklemek yasaktır.
+Durum (2026-09-11, Claude): **S01 teslim edildi (kanıtlı); S02 yalnız en küçük çekirdek;
+S03–S06 açık.** Yeni onay verilmedi; eski teyitler olduğu gibi duruyor.
+
+- **S01 — tamam.** Kanıt: `output/evidence/s01_20260911/` ekran görüntüleri (açılış, `L1→-3F22:1`
+  gerçek segment vurgusu, `/4.11`→sayfa 5 karşı uca atlama, hazırlanmamış sayfa 6 önizlemesi,
+  arayüzden hazırlama sonrası sayfa 6 ilişkileri, durdurulmuş kuyruk) ve testler
+  `SchemaRelationTests`, `PageCacheQueueTests`, `PreparedPageNavigationTests`, `DashedCrossingTests`
+  (toplam 135 test geçiyor). Gezilebilir 73 sayfa; varsayılan 58 aday şema; önbellekte hazırlanan
+  58/58 aday şema (0 hata; 21 bağlam sayfası hazırlanmadı, erişilebilir). İşaretli sayfa hâlâ 5
+  (2/4/5/28/36) — hazırlama işaret uygulamak değildir. Sayfa önbelleği `output/pagecache/<sha>/`,
+  regresyon pilotu rev8'e yazmaz; önbellek sayfasında işaret yazma reddedilir.
+  Bu turda bulunan ve düzeltilen iki hata: (1) kesikli PE rayının tiresi geçen telin üstünde
+  bitince T sayılıyordu (sayfa 2 N24.30 ağı PE'ye karışıyordu) — ölçülmüş koşunun
+  `crossings_without_dot` kanıtıyla `DASHED_RUN_CROSSING`; sayfa 4 bileşen sayıları buna göre +2
+  güncellendi. (2) Uç yazısı sahipliği: `X1 P1` port adı ve klemens sırasındaki iki tel arası
+  yazı hatta ad vermiyor; reddedilen yazı gerekçesiyle görünür.
+  Açık kalanlar: modül iç dağıtımının dış tel olmadığını gösteren ayrı işaret yok; "tam sayfa"
+  aktarım kapsamı önizlemesi S05'e ait, yapılmadı.
+- **S02 — kısmi (çekirdek).** `page_model` (`uvp.pdf2p8.page` 1.0): kimlikli PIN/JUNCTION/
+  POTENTIAL_ANCHOR/INTERRUPTION/OPEN_END düğümleri, gerçek segmentler, ağlar, ilişkiler, düzeltme
+  deposuna sürümlü bağ. Kullanıcının nesne/etiket/hat düzeltme editörü YOK.
+- S03–S06 uygulanmadı. Tüm 58 sayfanın kusursuz tanınmasını beklemek yasaktır.
+
+### Eklenti alt işleri — ayrıca tasarlandı, kodlanmadı
+
+`EPLAN_ADDIN_PLAN.md` kullanıcı ekranlarını, veri sahipliğini, JSON dosya sözleşmesini,
+EPLAN nesne/pin/koordinat eşlemesini, hata/tekrar aktarım kurallarını ve test matrisini tanımlar.
+Bu alt işler S sırasının yerine geçen yeni bir plan değildir:
+
+- [x] **E00:** yerel build/SDK ve gerçek host yetenek kontrolü (S03 hazırlığı). *2026-09-11:*
+  P8 2026.0.3.25702, API .NET Framework 4.8.1, `eplan_addin/build/build.bat` gerçek DLL'lere karşı
+  0 hata; kurulu varyant `Pro Panel`. Engel somut: EPLAN lisans hatası [70.34] (`lservrc` bu
+  bilgisayar için geçerli değil) — ayrıntı `eplan_addin/README.md`.
+- [ ] **E01:** küçük sayfa modeli + Python/C# ortak sözleşme (S02). *Kısmi:* `uvp.pdf2p8.page` +
+  `uvp.pdf2p8.import-request` (Python) ve C# host'un aynı paketi okuması yazıldı; JSON şema dosyaları
+  ve SDK'dan bağımsız C# Core ayrımı yok.
+- [ ] **E02–E04:** host kabuğu/katalog, gerekli ilk aile eşlemeleri, erken gerçek P8 kanıtı (S03).
+  *2026-09-12:* araç EPLAN İÇİNDE açılacak biçimde kuruldu — `UvpPdfToP8Panel` (WebView2 penceresi,
+  yerel motoru kendi başlatır, köprüden yalnız `ping`/`import` kabul eder) derleniyor.
+  *Kod hazır, çalıştırılamadı:* `UvpPdfToP8Probe` / `UvpPdfToP8Import` derleniyor; EPLAN lisans
+  engeli yüzünden katalog, eşleme ve geri okuma YOK. P8 aktarımı kanıtlanmadı.
+- [ ] **E05:** belge geneli ve kalan aileler (S04).
+- [ ] **E06–E08:** pano/tam sayfa filtresi, devamlar, kısmi paket, tekrar aktarım koruması,
+  kullanıcı değişiklikleri ve gerçek seçili sayfa aktarımı (S05).
+- [ ] **E09:** tekrarlanabilir build, kurulum ve runtime/imzalama testi (S05 teslimi).
+- [ ] **E10:** operatör ölçümü ve ilan edilen ayrı TROESTER değerlendirmesi (S06).
+
+**Claude'un çalışma yetkisi:** bu kod paketlerini sırayla uygulamak; ilk paket sonunda tüm
+projeyi bitmiş saymamak ve bağımsız sonraki kod işini gereksiz yeniden onaya bağlamamak.
+İlk elle tutulur teslim S01 ekranı, ikincisi S03 küçük gerçek P8 şemasıdır. Lisans/derleyici/
+test projesi engeli somut kaydedilir; yalnız etkilenen host kanıtı açık kalır. Canlı kullanıcı
+EPLAN projesine yazma/silme, buluta yükleme veya yeni kurulum ayrıca kapsam gerektirir.
 
 ### Yeni akışta bloke etmeyecek eski maddeler
 
