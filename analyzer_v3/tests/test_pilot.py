@@ -2193,6 +2193,60 @@ class PageCacheQueueTests(unittest.TestCase):
 
 
 
+class PinMatchTests(unittest.TestCase):
+    """Uç adı eşleştirme: müşteri `1 2 3`, makro `L1 L2 L3` olabilir."""
+
+    def test_variants_cover_the_known_writings(self):
+        from analyzer_v3 import pins
+        self.assertIn('1', pins.variants('1L1'))          # faz eki
+        self.assertIn('13', pins.variants('13/1'))        # eğik çizgi
+        self.assertIn('13', pins.variants('3.13'))        # ön ek
+        self.assertIn('L1', pins.variants('L1intern'))    # intern eki
+
+    def test_apostrophe_and_case_are_real_differences(self):
+        from analyzer_v3 import pins
+        # Primer/sekonder ayrımı buna dayanır: normalize EDİLMEZ.
+        self.assertNotIn("2", pins.variants("2'"))
+        found, _ = pins.match("2'", ['2'])
+        self.assertIsNone(found)
+        self.assertEqual(pins.match('A1', ['a.1'])[1], 'gevşek (ayırıcı/harf farkı)')
+
+    def test_customer_numbers_and_macro_phase_names_are_only_a_suggestion(self):
+        from analyzer_v3 import pins
+        # Müşteri `1 2 3`, makro `L1 L2 L3`: ADLARI tutmaz. Otomatik eşleşmez —
+        # sıraya göre ÖNERİ çıkar, onay kullanıcınındır.
+        result = pins.compare(['1', '2', '3'], ['L1', 'L2', 'L3'])
+        self.assertEqual(result['matched'], [])
+        self.assertEqual([(s['source'], s['macro']) for s in result['suggestions']],
+                         [('1', 'L1'), ('2', 'L2'), ('3', 'L3')])
+        self.assertFalse(result['fits'])
+        # Onaylanan eşleme tablosu profile yazılınca artık sorulmaz.
+        onaylı = pins.compare(['1', '2', '3'], ['L1', 'L2', 'L3'],
+                              aliases={'1': 'L1', '2': 'L2', '3': 'L3'})
+        self.assertTrue(onaylı['fits'])
+        self.assertEqual(onaylı['matched'][0]['how'], 'eşleme tablosu (onaylı)')
+
+    def test_compare_lists_both_sides_without_dropping_anything(self):
+        from analyzer_v3 import pins
+        result = pins.compare(['13', '14'], ['13', '14'])
+        self.assertEqual([r['source'] for r in result['matched']], ['13', '14'])
+        self.assertTrue(result['fits'])
+        # Eşleşmeyen iki taraf da görünür; karar kullanıcınındır.
+        other = pins.compare(['13', '14', 'PE'], ['13', '14'])
+        self.assertEqual(other['unmatched_source'], ['PE'])
+        self.assertEqual(other['unused_macro'], [])
+        self.assertFalse(other['fits'])
+        extra = pins.compare(['13'], ['13', 'PE'])
+        self.assertEqual(extra['unused_macro'], ['PE'])
+
+    def test_one_macro_pin_is_used_once(self):
+        from analyzer_v3 import pins
+        # İki kaynak ucu aynı makro ucuna düşemez.
+        result = pins.compare(['13', '13/1'], ['13'])
+        self.assertEqual(len(result['matched']), 1)
+        self.assertEqual(result['unmatched_source'], ['13/1'])
+
+
 class LabelListTests(unittest.TestCase):
     """Etiket listesi: çok kodlu etikette cihazın kendisi seçilir, ötekiler atılmaz."""
 
