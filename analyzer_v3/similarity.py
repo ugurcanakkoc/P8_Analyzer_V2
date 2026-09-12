@@ -123,18 +123,25 @@ def words_at(words, render_bbox, point, tol=LABEL_TOL):
     return out
 
 
-def nearest_word(words, render_bbox, point, radius, others=()):
+def nearest_word(words, render_bbox, point, radius, others=(), reach=0.0, lateral=4.0):
     """Bu noktanın kendi yazısı. Başka bir işaretli uca daha yakın yazı ONUN etiketidir.
 
     `others` verilirse sahiplik sınanır: aynı sayfadaki diğer işaretli uçlardan birine bu
     noktadan daha yakın duran yazı atlanır. Böylece bitişik klemens dizilerinde bir sembol
     komşusunun adını kendi adı sanmaz.
+
+    `reach` verilirse kare pencerenin dışına, YALNIZ bir eksen boyunca bakılır: uç adı
+    telin uzandığı yönde biraz uzağa basılmış olabilir, ama yana kaymaz. Ölçüm (sayfa 38,
+    PLC modülü `-27D22`): kanal adı `1` uçtan yanal 2.6 pt, boyuna 12.05 pt uzakta; 11 pt'lik
+    kare pencere onu kaçırıyordu. Yana açılmadığı için komşu kanalın adı çalınmaz.
     """
     best = None
     for w in words:
         wp = word_point(w, render_bbox)
-        d = max(abs(wp[0]-point[0]), abs(wp[1]-point[1]))
-        if d > radius:
+        dx, dy = abs(wp[0]-point[0]), abs(wp[1]-point[1])
+        d = max(dx, dy)
+        if d > radius and not (reach and ((dx <= lateral and dy <= reach)
+                                          or (dy <= lateral and dx <= reach))):
             continue
         if any(max(abs(wp[0]-o[0]), abs(wp[1]-o[1])) < d for o in others):
             continue                      # yazının sahibi başka bir uç

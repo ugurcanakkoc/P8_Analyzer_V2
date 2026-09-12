@@ -2353,7 +2353,9 @@ class Pilot:
             pins=[]
             for q in found:
                 rivals=[tuple(o) for o in found if o!=q]
-                hit=similarity.nearest_word(page['words'],rb,tuple(q),11.0,others=rivals)  # ad sayfadan
+                # Uç adı telin yönünde 16 pt'ye kadar aranır (PLC modülünde ad uçtan 12 pt
+                # yukarıda basılı); yana yalnız 4 pt — komşu kanalın adı çalınmasın.
+                hit=similarity.nearest_word(page['words'],rb,tuple(q),11.0,others=rivals,reach=16.0)
                 existing=[m for m in marks if abs(m['point'][0]-q[0])<=0.6 and abs(m['point'][1]-q[1])<=0.6]
                 pins.append(dict(point=q,pin=hit[1]['text'] if hit else '',
                                  pin_source='PAGE_LABEL' if hit else None,
@@ -2376,8 +2378,13 @@ class Pilot:
             for w in page['words']:
                 if document.classify_label(w['text'])!='DEVICE_TAG':
                     continue
-                centre=[(w['x0']+w['x1'])/2-rb[0],(w['top']+w['bottom'])/2-rb[1]]
-                distance=self._box_distance(box,centre)
+                # Uzaklık yazının MERKEZİNDEN değil KUTUSUNDAN ölçülür. Ölçüm (sayfa 42,
+                # `=170-13K52` kontağı): yazı 66.5 pt geniş; merkezi kutudan 40.7 pt uzakta
+                # kalıyor ve 26 pt yarıçapla eleniyordu — ad boş dönüyordu. Kendi sağ
+                # kenarından uzaklık 7.45 pt. Uzun etiket, yakın etikettir.
+                rect=[w['x0']-rb[0],w['top']-rb[1],w['x1']-rb[0],w['bottom']-rb[1]]
+                distance=(max(box[0]-rect[2],rect[0]-box[2],0.0)
+                          +max(box[1]-rect[3],rect[1]-box[3],0.0))
                 if distance<=DEVICE_TEXT_RADIUS:
                     tags.append((distance,w['text']))
             if tags:

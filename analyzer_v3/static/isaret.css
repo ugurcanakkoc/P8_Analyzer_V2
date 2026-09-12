@@ -2,9 +2,13 @@
   --ink: #17202a;
   --paper: #f7f7f5;
   --line: #ccd2d8;
-  --accent: #1f6feb;
-  --warn: #b45309;
-  --drop: #9aa3ab;
+  /* Renk seçimi: kullanıcı kırmızı-yeşil renk körü. Kırmızı/yeşil ÇİFTİ kullanılmaz;
+     ayrım mavi ↔ turuncu ile ve ayrıca çizgi biçimiyle (dolu/kesikli) yapılır. */
+  --blue: #0b5ed7;
+  --blue-soft: rgba(11, 94, 215, .12);
+  --orange: #d2691e;
+  --drop: #6b7580;
+  --warn: #8a5a00;
   color-scheme: light;
 }
 * { box-sizing: border-box; }
@@ -16,22 +20,24 @@ header, footer {
   display: flex; align-items: center; gap: 10px; padding: 8px 12px;
   background: #fff; border-bottom: 1px solid var(--line); flex: none;
 }
-footer { border: 0; border-top: 1px solid var(--line); }
+footer { border: 0; border-top: 1px solid var(--line); font-size: 14px; }
 .grow { flex: 1; }
-.muted { color: #5a6672; }
+.muted { color: #4a5560; }
 .nav { display: flex; align-items: center; gap: 4px; }
 #page-no { width: 5.5em; text-align: center; }
 button {
-  font: inherit; padding: 4px 10px; border: 1px solid var(--line); border-radius: 5px;
+  font: inherit; padding: 5px 11px; border: 1px solid var(--line); border-radius: 5px;
   background: #fff; cursor: pointer;
 }
-button:hover:not(:disabled) { border-color: var(--accent); }
+button:hover:not(:disabled) { border-color: var(--blue); }
 button:disabled { opacity: .5; cursor: default; }
-button.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+button.primary { background: var(--blue); color: #fff; border-color: var(--blue); }
 input[type=text], input[type=number] {
   font: inherit; padding: 4px 6px; border: 1px solid var(--line); border-radius: 5px; background: #fff;
 }
-.check { display: flex; align-items: center; gap: 4px; }
+input[type=checkbox] { width: 17px; height: 17px; }
+.check { display: flex; align-items: center; gap: 5px; }
+:focus-visible { outline: 3px solid var(--blue); outline-offset: 1px; }
 
 main { flex: 1; display: flex; min-height: 0; }
 #stage { flex: 1; position: relative; min-width: 0; background: #e9ecef; }
@@ -39,36 +45,44 @@ main { flex: 1; display: flex; min-height: 0; }
 #svg.panning { cursor: grabbing; }
 #svg.boxing { cursor: crosshair; }
 .hint {
-  position: absolute; left: 10px; bottom: 8px; margin: 0; padding: 4px 8px;
-  background: rgba(255,255,255,.9); border: 1px solid var(--line); border-radius: 5px; font-size: 12px;
+  position: absolute; left: 10px; bottom: 8px; margin: 0; padding: 5px 9px;
+  background: rgba(255,255,255,.92); border: 1px solid var(--line); border-radius: 5px; font-size: 12.5px;
 }
 
 aside {
-  width: 330px; flex: none; overflow: auto; padding: 10px 12px;
+  width: 350px; flex: none; overflow: auto; padding: 10px 12px;
   background: #fff; border-left: 1px solid var(--line);
 }
 aside h2 { font-size: 15px; margin: 0 0 8px; }
 aside h3 { font-size: 13px; margin: 14px 0 4px; text-transform: uppercase; letter-spacing: .04em; }
 .field { display: block; margin-bottom: 6px; }
 .field input { width: 100%; margin-top: 3px; }
-.rows { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.rows { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 5px; }
 .rows li { display: flex; align-items: center; gap: 6px; font-size: 13px; }
 .rows li.off { color: var(--drop); }
 .rows input[type=text] { flex: 1; min-width: 0; }
-.rows .where { font-variant-numeric: tabular-nums; font-size: 11px; color: #6b7580; }
-.issues { list-style: none; margin: 10px 0 0; padding: 0; color: var(--warn); font-size: 12px; }
+.rows .where { font-variant-numeric: tabular-nums; font-size: 11.5px; color: #4a5560; }
+.rows a { color: var(--blue); cursor: pointer; text-decoration: underline; }
+.rows li.here { background: var(--blue-soft); border-radius: 4px; }
+.issues { list-style: none; margin: 10px 0 0; padding: 0; color: var(--warn); font-size: 12.5px; }
 .buttons { display: flex; gap: 6px; margin-top: 12px; }
 .buttons button { flex: 1; }
-
 #similar-out { margin-top: 10px; font-size: 13px; }
-#similar-out a { display: block; padding: 2px 0; color: var(--accent); cursor: pointer; }
 
-/* çizim katmanı */
-.mark { fill: none; stroke: #2f9e44; stroke-width: .6; }
-.mark-dot { fill: #2f9e44; }
-.sel-box { fill: rgba(31,111,235,.08); stroke: var(--accent); stroke-width: .7; }
-.handle { fill: #fff; stroke: var(--accent); stroke-width: .5; cursor: nwse-resize; }
-.part { stroke: #d6336c; stroke-width: 1.1; fill: none; cursor: pointer; }
-.part.off { stroke: var(--drop); stroke-dasharray: 1.2 1.2; }
-.part-hit { stroke: transparent; stroke-width: 3.5; fill: none; cursor: pointer; }
-.pin-dot { fill: var(--accent); }
+/* ---- çizim katmanı -------------------------------------------------------------
+   Çizgi kalınlıkları EKRAN PİKSELİNDE sabittir (non-scaling-stroke): uzaklaşınca
+   işaretler incelip kaybolmaz. */
+.mark, .part, .part-hit, .sel-box, .cand, .handle {
+  vector-effect: non-scaling-stroke;
+}
+.mark { fill: none; stroke: var(--blue); stroke-width: 2.5px; }        /* kayıtlı işaret */
+.mark-dot { fill: var(--blue); stroke: #fff; stroke-width: 1px; vector-effect: non-scaling-stroke; }
+.cand { fill: rgba(11,94,215,.10); stroke: var(--blue); stroke-width: 4px; }   /* eşleşen aday */
+.cand.picked { fill: rgba(11,94,215,.22); }
+.cand.skip { stroke: var(--drop); stroke-dasharray: 6 4; stroke-width: 3px; fill: none; }
+.sel-box { fill: rgba(210,105,30,.10); stroke: var(--orange); stroke-width: 3px; }  /* şu anki seçim */
+.handle { fill: #fff; stroke: var(--orange); stroke-width: 2px; cursor: nwse-resize; }
+.part { stroke: var(--orange); stroke-width: 3px; fill: none; cursor: pointer; }
+.part.off { stroke: var(--drop); stroke-dasharray: 4 3; stroke-width: 2.5px; }
+.part-hit { stroke: transparent; stroke-width: 14px; fill: none; cursor: pointer; }
+.pin-dot { fill: var(--orange); stroke: #fff; stroke-width: 1px; vector-effect: non-scaling-stroke; }

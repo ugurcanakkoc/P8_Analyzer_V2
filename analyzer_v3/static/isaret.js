@@ -16,6 +16,7 @@ let index = [];            // /api/pages
 let page = null;
 let view = [0, 0, 100, 100];
 let proposal = null;       // { bbox, pins, objects, excluded, device, issues }
+let candidates = [];       // benzer arama sonuçları (kayıt değil; kullanıcı seçer)
 let lastBoxId = null;
 let busy = false;
 
@@ -81,8 +82,13 @@ function setView(box) {
   y = Math.min(Math.max(y, -h / 2), ph - h / 2);
   view = [x, y, w, h];
   $('svg').setAttribute('viewBox', view.join(' '));
+  // Nokta ve tutamaç boyutları ekran pikselinde sabit tutulur: uzaklaşınca kaybolmasınlar.
+  drawExisting();
+  drawCandidates();
   if (proposal) drawSelection();
 }
+
+function screenSize(px) { return px / screenScale(); }
 
 function fitPage() {
   const [w, h] = pageSize(page);
@@ -119,6 +125,9 @@ async function openPage(n, keepView) {
     say('Sayfa ' + n + ' hazırlanmadı. Geometrisi olmadan işaret konamaz.');
   }
   drawExisting();
+  drawCandidates();
+  renderCandidateList();
+  if (lastSearch) $('panel').hidden = false;
 }
 
 async function preparePage() {
@@ -153,9 +162,34 @@ function drawExisting() {
     const b = box.bbox;
     layer.appendChild(el('rect', { x: b[0], y: b[1], width: b[2] - b[0], height: b[3] - b[1], class: 'mark' }));
   }
+  const r = screenSize(4);
   for (const pin of state.pins) {
     if ((pin.page || 4) !== page) continue;
-    layer.appendChild(el('circle', { cx: pin.point[0], cy: pin.point[1], r: 0.7, class: 'mark-dot' }));
+    layer.appendChild(el('circle', { cx: pin.point[0], cy: pin.point[1], r: r, class: 'mark-dot' }));
+  }
+}
+
+/* Eşleşen adaylar sayfanın üstünde KALIN ÇERÇEVE ile görünür; kutuya tıklamak seçer. */
+function drawCandidates() {
+  const layer = $('cands');
+  if (!layer) return;
+  layer.replaceChildren();
+  for (const row of candidates) {
+    if (row.page !== page) continue;
+    const b = row.candidate.bbox;
+    const pad = screenSize(3);
+    const rect = el('rect', {
+      x: b[0] - pad, y: b[1] - pad, width: b[2] - b[0] + 2 * pad, height: b[3] - b[1] + 2 * pad,
+      class: 'cand' + (row.pick ? ' picked' : (row.ready ? '' : ' skip')),
+    });
+    rect.addEventListener('pointerdown', (ev) => {
+      ev.stopPropagation();
+      if (!row.ready) { say('Bu aday seçilemez: ' + (row.why || 'eksik bilgi'), true); return; }
+      row.pick = !row.pick;
+      drawCandidates();
+      renderCandidateList();
+    });
+    layer.appendChild(rect);
   }
 }
 
@@ -188,9 +222,9 @@ function drawSelection() {
   const b = proposal.bbox;
   sel.appendChild(el('rect', { x: b[0], y: b[1], width: b[2] - b[0], height: b[3] - b[1], class: 'sel-box' }));
   for (const p of proposal.pins || []) {
-    sel.appendChild(el('circle', { cx: p.point[0], cy: p.point[1], r: 0.6, class: 'pin-dot' }));
+    sel.appendChild(el('circle', { cx: p.point[0], cy: p.point[1], r: screenSize(4.5), class: 'pin-dot' }));
   }
-  const size = 7 / screenScale();                       // tutamaç ekranda sabit büyüklükte
+  const size = screenSize(11);                          // tutamaç ekranda sabit büyüklükte
   const corners = [[b[0], b[1]], [b[2], b[1]], [b[0], b[3]], [b[2], b[3]]];
   corners.forEach((c, i) => {
     const handle = el('rect', { x: c[0] - size / 2, y: c[1] - size / 2, width: size, height: size, class: 'handle' });
@@ -205,7 +239,6 @@ function closeProposal() {
   proposal = null;
   lastBoxId = null;
   $('panel').hidden = true;
-  $('similar-out').replaceChildren();
   drawSelection();
 }
 
@@ -332,6 +365,50 @@ async function save() {
   } catch (e) { fail(e); }
 }
 
+/* Aynı şekli taşıyan adaylar. Ad ve uç adları HER SAYFANIN kendi yazısından okunur;
+   şablondan kopyalanmaz. Aday kayıt değildir: hangisinin yazılacağını kullanıcı seçer. */
+/* Aday notları. Bunlar ELEME DEĞİLDİR: sembol aynı, ama çevresi şablondan farklı.
+   Kullanıcı görsün diye yazılır; gizlenirse yanlış kayıt sessizce geçer. */
+const NOTES = {
+  NO_EXTERNAL_LINE_AT_POINT: 'uç telde değil',
+  EXTERNAL_LINE_COUNT_DIFFERS_FROM_TEMPLATE: 'tel sayısı şablondan farklı',
+  PIN_LABEL_DIFFERS_FROM_TEMPLATE: 'uç adı şablondan farklı',
+  PIN_LABEL_NOT_FOUND_AT_SAME_OFFSET: 'uç adı aynı yerde değil',
+  PIN_LABEL_AMBIGUOUS: 'uç adı birden çok',
+  DEVICE_LABEL_DIFFERS_FROM_TEMPLATE: 'cihaz adı şablondan farklı',
+  DEVICE_LABEL_NOT_FOUND_AT_SAME_OFFSET: 'cihaz yazısı aynı yerde değil',
+  DEVICE_LABEL_AMBIGUOUS: 'cihaz yazısı birden çok',
+  CURVE_SHAPE_UNVERIFIED_BBOX_ONLY: 'eğri şekli doğrulanamadı',
+  TEMPLATE_PIN_LABEL_UNKNOWN: 'şablonda uç adı yoktu',
+};
+
+function notesOf(candidate) {
+  const codes = new Set(candidate.issues || []);
+  for (const pin of candidate.pins || []) for (const code of pin.issues || []) codes.add(code);
+  return Array.from(codes).map((code) => NOTES[code] || code);
+}
+
+function pinNameOf(pin) {
+  const texts = pin.page_pin_texts || [];
+  return texts.length === 1 ? texts[0] : '';
+}
+
+/* Neden yazılamaz? Sebep gizlenmez: kullanıcı listede görür, çizimde kesikli gri durur. */
+function whyNotReady(row) {
+  const why = [];
+  const c = row.candidate;
+  if (c.is_template) why.push('şablonun kendisi');
+  if (!c.device_name) why.push('ad okunamadı');
+  if (!(c.pins || []).length) why.push('uç yok');
+  for (const pin of c.pins || []) {
+    if ((pin.already_marked || []).length) why.push('uç zaten kayıtlı');
+    else if (!pinNameOf(pin)) why.push('uç adı okunamadı');
+  }
+  return Array.from(new Set(why));
+}
+
+let lastSearch = null;
+
 async function findSimilar() {
   if (!lastBoxId) return;
   const out = $('similar-out');
@@ -339,20 +416,109 @@ async function findSimilar() {
   out.textContent = 'aranıyor…';
   try {
     const result = await api('/api/similar?template=' + encodeURIComponent(lastBoxId) + '&pages=ALL');
-    out.replaceChildren();
-    const head = document.createElement('p');
-    head.className = 'muted';
-    head.textContent = result.candidates_total + ' aday · ' + result.pages.length + ' sayfa tarandı · '
-      + result.unprepared_pages.length + ' sayfa hazırlanmadı (tarandı sayılmaz)';
-    out.appendChild(head);
+    candidates = [];
     for (const row of result.results) {
-      if (!row.candidates.length) continue;
-      const link = document.createElement('a');
-      link.textContent = 'Sayfa ' + row.page + ': ' + row.candidates.length + ' aday';
-      link.addEventListener('click', () => openPage(row.page));
-      out.appendChild(link);
+      for (const candidate of row.candidates) candidates.push({ page: row.page, candidate: candidate, pick: false });
     }
+    for (const row of candidates) {
+      row.why = whyNotReady(row).join(', ');
+      row.ready = !row.why;
+      row.pick = row.ready;
+    }
+    lastSearch = result;
+    renderCandidateList();
+    drawCandidates();
   } catch (e) { out.textContent = ''; fail(e); }
+}
+
+function renderCandidateList() {
+  const out = $('similar-out');
+  const result = lastSearch;
+  out.replaceChildren();
+  if (!result) return;
+  const head = document.createElement('p');
+  head.className = 'muted';
+  head.textContent = result.candidates_total + ' aday · ' + result.pages.length + ' sayfa tarandı · '
+    + result.unprepared_pages.length + ' sayfa hazırlanmadı ("orada yok" demek değil)';
+  out.appendChild(head);
+
+  const list = document.createElement('ul');
+  list.className = 'rows';
+  candidates.forEach((row) => {
+    const li = document.createElement('li');
+    if (row.page === page) li.classList.add('here');
+    const box = document.createElement('input');
+    box.type = 'checkbox';
+    box.checked = row.pick;
+    box.disabled = !row.ready;
+    box.addEventListener('change', () => { row.pick = box.checked; updateApplyButton(); drawCandidates(); });
+    const link = document.createElement('a');
+    const pins = (row.candidate.pins || []).map(pinNameOf).join('/');
+    link.textContent = 's' + row.page + ' · ' + (row.candidate.device_name || 'ad yok')
+      + (pins ? (' · ' + pins) : '');
+    link.addEventListener('click', () => openPage(row.page));
+    li.append(box, link);
+    const notes = row.why ? [row.why] : notesOf(row.candidate);
+    if (notes.length) {
+      const note = document.createElement('span');
+      note.className = 'where';
+      note.textContent = notes.join(', ');
+      note.title = notes.join('\n');
+      li.append(note);
+      if (row.why) li.classList.add('off');
+    }
+    list.appendChild(li);
+  });
+  out.appendChild(list);
+
+  const apply = document.createElement('button');
+  apply.id = 'apply-all';
+  apply.className = 'primary';
+  apply.addEventListener('click', applySelected);
+  const bar = document.createElement('div');
+  bar.className = 'buttons';
+  bar.appendChild(apply);
+  out.appendChild(bar);
+  updateApplyButton();
+}
+
+function updateApplyButton() {
+  const button = $('apply-all');
+  if (!button) return;
+  const count = candidates.filter((r) => r.pick).length;
+  button.textContent = 'Seçili ' + count + ' adayı kaydet';
+  button.disabled = count === 0;
+}
+
+async function applySelected() {
+  const picked = candidates.filter((r) => r.pick);
+  if (!picked.length) return;
+  $('apply-all').disabled = true;
+  let written = 0;
+  const failed = [];
+  for (const row of picked) {
+    try {
+      await post('/api/mark', {
+        page: row.page,
+        device: row.candidate.device_name,
+        bbox: row.candidate.bbox,
+        method: 'P04_CANDIDATE',
+        pins: (row.candidate.pins || []).map((p) => ({ point: p.point, pin: pinNameOf(p) })),
+      });
+      written += 1;
+      row.pick = false;
+    } catch (e) {
+      failed.push('s' + row.page + ' ' + (row.candidate.device_name || '') + ': ' + (e.message || e));
+    }
+  }
+  await loadState();
+  for (const row of picked) { row.ready = false; row.why = 'kaydedildi'; }
+  drawExisting();
+  drawCandidates();
+  renderCandidateList();
+  say(written + ' aday kaydedildi' + (failed.length ? (' · ' + failed.length + ' yazılamadı: ' + failed[0]) : ''),
+      failed.length > 0);
+  updateApplyButton();
 }
 
 /* ============================================================ fare ve klavye */

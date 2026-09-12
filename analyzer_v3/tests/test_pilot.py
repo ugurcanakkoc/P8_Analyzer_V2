@@ -1,4 +1,4 @@
-﻿import copy
+import copy
 from io import BytesIO
 import json
 import math
@@ -23,7 +23,38 @@ from analyzer_v3.similarity import (descriptor, find as find_similar, search as 
 from analyzer_v3.server import make_server
 
 RUN=ROOT/'output/pilots/E122/20260909_v3_p03'
-RUN5=ROOT/'output/pilots/E122/20260910_v3_p05_rev8'
+LIVE5=ROOT/'output/pilots/E122/20260910_v3_p05_rev8'
+
+# Testler CANLI kayda bakmaz. Kullanıcı uygulamayla yeni işaret koydukça sayfa 4/5'in
+# durumu değişir; bu bir gerileme değil, kullanıcının işidir. Takım bu yüzden kaydın
+# BELİRLİ BİR ANDAKİ halini kullanır: bu andan sonra açılan kayıtlar kopyadan düşürülür,
+# canlı kayda dokunulmaz. Ölçüm: 2026-09-12 16:52'den sonra 210 uç eklendi ve beklentiye
+# dayanan 10 test kırmızıya döndü.
+FIXTURE_CUTOFF='2026-09-12T16:00:00+00:00'
+
+
+def _frozen_run():
+    """LIVE5'in dondurulmuş kopyası (bir kez kurulur, oturum boyunca kullanılır)."""
+    import atexit, sqlite3
+    frozen=Path(tempfile.mkdtemp(prefix='uvp-frozen-'))/'run'
+    shutil.copytree(LIVE5,frozen)
+    atexit.register(shutil.rmtree,frozen.parent,True)
+    db=sqlite3.connect(str(frozen/'annotations.sqlite3'))
+    try:
+        later={row[0] for row in db.execute(
+            'select pin_id from events group by pin_id having min(time)>?',(FIXTURE_CUTOFF,))}
+        for table in ('pins','boxes','reviews'):
+            for record in [r[0] for r in db.execute('select id from %s'%table)]:
+                if record in later:
+                    db.execute('delete from %s where id=?'%table,(record,))
+        db.execute('delete from events where time>?',(FIXTURE_CUTOFF,))
+        db.commit()
+    finally:
+        db.close()
+    return frozen
+
+
+RUN5=_frozen_run() if (LIVE5/'manifest.json').exists() else LIVE5
 
 
 def seg(i,a,b,**kwargs):
