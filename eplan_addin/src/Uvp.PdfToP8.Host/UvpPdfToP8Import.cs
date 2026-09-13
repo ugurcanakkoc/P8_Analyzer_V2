@@ -178,7 +178,8 @@ namespace Uvp.PdfToP8.Host
                                      Project prj, Page pg, SymbolVariant sv, MDPartsDatabase partsDb,
                                      Dictionary<string, Function[]> devices,
                                      Dictionary<string, PointD> nodePoint, Dictionary<string, Page> nodePage,
-                                     Dictionary<string, object> row, List<string> log)
+                                     Dictionary<string, object> row, List<string> log,
+                                     Dictionary<string, List<Placement>> boxGroups)
         {
             if (S(familyEntry, "placement") != "DEVICE_FROM_PART") return false;
             string partNumber = S(o, "part_number");
@@ -241,6 +242,13 @@ namespace Uvp.PdfToP8.Host
                 PointD real = new PointD(chosen.Location.X + pin.Location.X, chosen.Location.Y + pin.Location.Y);
                 nodePoint[id + "#" + want] = real;
                 nodePage[id + "#" + want] = pg;
+                string boxGroup = S(pinRow, "box_group");
+                if (boxGroup != "")
+                {
+                    string key = pg.Name + "|" + tag + "|" + boxGroup;
+                    if (!boxGroups.ContainsKey(key)) boxGroups[key] = new List<Placement>();
+                    boxGroups[key].Add(chosen);
+                }
                 pinLog.Add(new Dictionary<string, object> {
                     { "pin", want }, { "eplan_pin", pin.Name }, { "name", chosen.Name },
                     { "real_point", XY(real) }, { "box_role", role }, { "symbol", symbolName },
@@ -547,6 +555,9 @@ namespace Uvp.PdfToP8.Host
                 // Parça veritabanı her zaman açılır: parçadan cihaz yolu (PLC) makro yolundan
                 // bağımsızdır. Çökme makro dosyasını 326 kez açıp kapatmaktan geliyordu.
                 Dictionary<string, Function[]> devicesFromPart = new Dictionary<string, Function[]>();
+                // Tek kutudaki uçlar (ör. 1+9): sayfa|cihaz|kutu → yerleşen fonksiyonlar.
+                Dictionary<string, List<Placement>> boxGroups = new Dictionary<string, List<Placement>>();
+                List<string> groupsMade = new List<string>();
                 MDPartsDatabase partsDb = null;
                 try { partsDb = new MDPartsManagement().OpenDatabase(); }
                 catch (Exception ex) { log.Add("Parça veritabanı açılamadı: " + ex.Message); }
@@ -605,7 +616,8 @@ namespace Uvp.PdfToP8.Host
                                     // PARÇADAN CİHAZ: Cihaz Gezgini ile aynı yol. Olursa makro/sembol
                                     // yolu hiç denenmez.
                                     if (TryPlaceFromPart(o, D(families[family]), prj, pg, sv, partsDb,
-                                                         devicesFromPart, nodePoint, nodePage, row, log))
+                                                         devicesFromPart, nodePoint, nodePage, row, log,
+                                                         boxGroups))
                                     {
                                         row["eplan_type"] = "parçadan cihaz";
                                         created.Add(row);
@@ -789,6 +801,19 @@ namespace Uvp.PdfToP8.Host
                                 rejected.Add(row);
                             }
                         }
+                        // Tek kutudaki uçlar GRUPLANIR: biri taşınınca öteki de gelir (Ctrl+G ile aynı).
+                        foreach (KeyValuePair<string, List<Placement>> box in boxGroups)
+                        {
+                            if (!box.Key.StartsWith(pg.Name + "|") || box.Value.Count < 2) continue;
+                            if (groupsMade.Contains(box.Key)) continue;
+                            try
+                            {
+                                new Eplan.EplApi.DataModel.Group().Create(box.Value.ToArray());
+                                groupsMade.Add(box.Key);
+                            }
+                            catch (Exception ex) { log.Add("gruplanamadı " + box.Key + ": " + ex.Message); }
+                        }
+                        receipt["box_groups"] = groupsMade;
                     }
                     // ÖNCE otomatik bağlama: hizalı ve birbirine bakan bağlantı noktaları EPLAN
                     // tarafından kendiliğinden bağlanır; çizgi çizmeye gerek yoktur.

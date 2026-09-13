@@ -2301,6 +2301,14 @@ class PlcLayoutTests(unittest.TestCase):
         self.assertEqual([roles[k] for k in ('L+', 'M', '1', '9', '3')],
                          ['first', 'extra', 'first', 'extra', 'single'])
 
+    def test_box_group_key_is_the_first_pin_of_the_box(self):
+        from analyzer_v3.eplan_export import _box_groups
+        pins = [self.pin('L+', 40.4), self.pin('M', 45.4), self.pin('1', 70.4),
+                self.pin('9', 80.4), self.pin('3', 150.4)]
+        groups = _box_groups(pins, 20 * self.MM)
+        # 1 ile 9 aynı kutu anahtarını paylaşır: EPLAN'da birlikte gruplanırlar.
+        self.assertEqual(groups, {'L+': 'L+', 'M': 'L+', '1': '1', '9': '1', '3': '3'})
+
     def test_pins_on_different_heights_never_share_a_box(self):
         from analyzer_v3.eplan_export import _box_roles
         roles = _box_roles([self.pin('a', 70.4, 100.0), self.pin('b', 72.0, 140.0)], 20 * self.MM)
