@@ -92,16 +92,77 @@ namespace Uvp.PdfToP8.Host
                 Page page = new Page();
                 page.Create(scratch, DocumentTypeManager.DocumentType.Circuit, names);
 
-                // 1) Cihazı PARÇADAN oluştur: Cihaz Gezgini'ndeki "yeni cihaz" ile aynı iş.
-                Function[] functions = null;
+                // 0) Parçanın kendisi: varyant ve FONKSİYON ŞABLONLARI. İlk denemede varyant boş
+                //    verildi ve CreateDevice "S029017 cihaz oluşturulurken hata" döndü.
+                string variant = "";
                 try
                 {
-                    functions = new DeviceService().CreateDevice(scratch, part, "", new FunctionPropertyList());
+                    Eplan.EplApi.MasterData.MDPartsDatabase db =
+                        new Eplan.EplApi.MasterData.MDPartsManagement().OpenDatabase();
+                    Eplan.EplApi.MasterData.MDPart mdPart = db.GetPart(part);
+                    if (mdPart == null)
+                    {
+                        report["part_found"] = false;
+                    }
+                    else
+                    {
+                        report["part_found"] = true;
+                        variant = mdPart.Variant ?? "";
+                        report["part_variant"] = variant;
+                        List<object> templates = new List<object>();
+                        Eplan.EplApi.MasterData.MDFunctionTemplatePosition[] positions = mdPart.FunctionTemplatePositions;
+                        if (positions != null)
+                            foreach (Eplan.EplApi.MasterData.MDFunctionTemplatePosition position in positions)
+                                templates.Add(new Dictionary<string, object> {
+                                    { "definition_id", position.FunctionDefinitionId },
+                                    { "definition_group", position.FunctionDefinitionGroup },
+                                    { "category", Text(delegate { return position.FunctionDefinitionCategory.ToString(); }) },
+                                    { "template_group", Text(delegate { return position.TemplateGroup; }) },
+                                    { "description", Text(delegate { return position.AdditionalDescription.GetStringToDisplay(ISOCode.Language.L_tr_TR); }) } });
+                        report["function_templates"] = templates;
+                        report["function_template_count"] = templates.Count;
+                    }
                 }
-                catch (Exception ex)
+                catch (Exception ex) { report["part_error"] = ex.GetType().Name + ": " + ex.Message; }
+
+                // 1) Cihazı PARÇADAN oluştur: Cihaz Gezgini'ndeki "yeni cihaz" ile aynı iş.
+                //    Üç yol sırayla denenir; hangisinin çalıştığı kayda geçer.
+                Function[] functions = null;
+                List<object> attempts = new List<object>();
+                DeviceService service = new DeviceService();
+                for (int attempt = 0; attempt < 3 && (functions == null || functions.Length == 0); attempt++)
                 {
-                    report["create_error"] = ex.GetType().Name + ": " + ex.Message;
+                    Dictionary<string, object> tried = new Dictionary<string, object>();
+                    try
+                    {
+                        if (attempt == 0)
+                        {
+                            tried["way"] = "CreateDevice(proje, kod, gerçek varyant, boş konum)";
+                            functions = service.CreateDevice(scratch, part, variant, new FunctionPropertyList());
+                        }
+                        else if (attempt == 1)
+                        {
+                            tried["way"] = "CreateDevice(proje, kod, gerçek varyant, yapı dolu konum)";
+                            FunctionPropertyList location = new FunctionPropertyList();
+                            location.DESIGNATION_PLANT = "UVPDEN";
+                            location.DESIGNATION_LOCATION = "E122";
+                            functions = service.CreateDevice(scratch, part, variant, location);
+                        }
+                        else
+                        {
+                            tried["way"] = "CreateDevice(kod, gerçek varyant, sayfa, nokta)";
+                            functions = service.CreateDevice(part, variant, page, new PointD(40.0, 250.0));
+                        }
+                        tried["result"] = functions == null ? "null" : functions.Length + " fonksiyon";
+                    }
+                    catch (Exception ex)
+                    {
+                        tried["error"] = ex.GetType().Name + ": " + ex.Message;
+                        functions = null;
+                    }
+                    attempts.Add(tried);
                 }
+                report["create_attempts"] = attempts;
                 List<object> created = new List<object>();
                 if (functions != null)
                     foreach (Function function in functions) created.Add(Describe(function));
