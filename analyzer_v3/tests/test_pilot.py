@@ -2285,6 +2285,53 @@ class LabelListTests(unittest.TestCase):
         self.assertEqual(picked['code'], 'RIT.9340950')
 
 
+class PlcLayoutTests(unittest.TestCase):
+    """PLC yerleşimi: uç yönü kaynaktaki telden, yakın uçlar tek kutu."""
+    MM = 72.0 / 25.4          # 1 mm kaç punto
+
+    def pin(self, pid, x_mm, y_pt=100.0):
+        return dict(id=pid, point=[x_mm * self.MM, y_pt])
+
+    def test_close_pins_share_one_box_and_channels_stay_apart(self):
+        from analyzer_v3.eplan_export import _box_roles
+        # Kaynaktaki gerçek aralıklar: L+/M 5 mm, 1/9 10 mm, kanal aralığı 40 mm.
+        pins = [self.pin('L+', 40.4), self.pin('M', 45.4), self.pin('1', 70.4),
+                self.pin('9', 80.4), self.pin('3', 150.4)]
+        roles = _box_roles(pins, 20 * self.MM)
+        self.assertEqual([roles[k] for k in ('L+', 'M', '1', '9', '3')],
+                         ['first', 'extra', 'first', 'extra', 'single'])
+
+    def test_pins_on_different_heights_never_share_a_box(self):
+        from analyzer_v3.eplan_export import _box_roles
+        roles = _box_roles([self.pin('a', 70.4, 100.0), self.pin('b', 72.0, 140.0)], 20 * self.MM)
+        self.assertEqual((roles['a'], roles['b']), ('single', 'single'))
+
+    def test_wire_direction_is_read_from_the_drawn_edge_and_never_guessed(self):
+        from analyzer_v3.eplan_export import _direction_at, _wire_directions
+        rel = dict(networks=[dict(edges=[[100.0, 100.0, 100.0, 200.0],
+                                         [300.0, 50.0, 300.0, 80.0], [300.0, 80.0, 360.0, 80.0]])])
+        directions = _wire_directions(rel)
+        self.assertEqual(_direction_at(directions, (100.0, 100.0)), 'Down')   # PDF'te y aşağı büyür
+        self.assertEqual(_direction_at(directions, (100.0, 200.0)), 'Up')
+        # Köşe noktasında iki yön var: belirsiz, uydurulmaz.
+        self.assertIsNone(_direction_at(directions, (300.0, 80.0)))
+        self.assertIsNone(_direction_at(directions, (500.0, 500.0)))
+
+    def test_unknown_direction_takes_the_device_majority_but_never_a_tie(self):
+        from analyzer_v3.eplan_export import _majority_direction, _wire_directions
+        # İki kanal aşağı tel taşıyor; L+ ucunda tel yok (38. sayfadaki durum).
+        rel = dict(networks=[dict(edges=[[10.0, 10.0, 10.0, 60.0], [40.0, 10.0, 40.0, 60.0]])])
+        directions = _wire_directions(rel)
+        pins = [dict(id='1', point=[10.0, 10.0]), dict(id='2', point=[40.0, 10.0]),
+                dict(id='L+', point=[70.0, 10.0])]
+        self.assertEqual(_majority_direction(directions, pins), 'Down')
+        # Hiç ölçülmüş yön yoksa boş kalır.
+        self.assertIsNone(_majority_direction(directions, [dict(id='x', point=[500.0, 500.0])]))
+        # Eşitlikte karar verilmez.
+        tie = dict(networks=[dict(edges=[[10.0, 10.0, 10.0, 60.0], [40.0, 10.0, 40.0, -40.0]])])
+        self.assertIsNone(_majority_direction(_wire_directions(tie), pins[:2]))
+
+
 class CustomerProfileTests(unittest.TestCase):
     """Müşteri profili: aile kuralları veri, ad ise dosya yolu — doğrulanır."""
 

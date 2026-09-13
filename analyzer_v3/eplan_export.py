@@ -258,6 +258,80 @@ def _drawn_links(net, anchors, number, height):
     return links, issues
 
 
+def _wire_directions(rel, tol=0.6):
+    """Her uç noktası için telin gittiği yön (Up/Down/Left/Right), PDF koordinatında.
+
+    Noktaya değen çizilmiş kenarın öbür ucu yukarıdaysa 'Up'. Aynı noktada birden çok yön
+    varsa (uç bir dalın ortasında) `_direction_at` None döner — yön uydurulmaz.
+    PDF'te y aşağı büyür; EPLAN'da yukarı. Yön ADI ikisinde de aynı görsel anlamı taşır.
+    """
+    out = {}
+    for net in rel.get('networks') or []:
+        for edge in net.get('edges') or []:
+            a, b = (edge[0], edge[1]), (edge[2], edge[3])
+            for here, there in ((a, b), (b, a)):
+                dx, dy = there[0] - here[0], there[1] - here[1]
+                if abs(dx) < tol and abs(dy) < tol:
+                    continue
+                if abs(dx) >= abs(dy):
+                    way = 'Right' if dx > 0 else 'Left'
+                else:
+                    way = 'Down' if dy > 0 else 'Up'
+                out.setdefault((round(here[0], 1), round(here[1], 1)), set()).add(way)
+    return out
+
+
+def _direction_at(directions, point, tol=0.6):
+    """Noktadaki TEK tel yönü; yoksa ya da birden çoksa None."""
+    found = set()
+    for (x, y), ways in directions.items():
+        if abs(x - point[0]) <= tol and abs(y - point[1]) <= tol:
+            found |= ways
+    return next(iter(found)) if len(found) == 1 else None
+
+
+def _majority_direction(directions, pins):
+    """Cihazın telden OKUNABİLEN uç yönlerinin çoğunluğu; hiç yoksa ya da eşitse None."""
+    from collections import Counter
+    counts = Counter(d for d in (_direction_at(directions, q['point']) for q in pins) if d)
+    if not counts:
+        return None
+    ranked = counts.most_common(2)
+    if len(ranked) == 2 and ranked[0][1] == ranked[1][1]:
+        return None
+    return ranked[0][0]
+
+
+def _box_roles(pins, gap_pt):
+    """Aynı yükseklikte, aralarında `gap_pt`'den az olan uçlar TEK KUTU olur.
+
+    Dönüş: uç kimliği → 'single' | 'first' | 'extra'. Soldan sağa: kutunun ilk ucu 'first',
+    içindeki ötekiler 'extra'. Ölçüt, hedef proje s.45: -13D22 kutusu 1+9 ve 3+11 taşıyor;
+    kaynakta bu çiftlerin arası 10 mm, kanal aralığı 40 mm.
+    """
+    roles, rows = {}, {}
+    for pin in pins:
+        rows.setdefault(round(pin['point'][1]), []).append(pin)
+    for row in rows.values():
+        row.sort(key=lambda q: q['point'][0])
+        groups, current = [], [row[0]]
+        for pin in row[1:]:
+            if pin['point'][0] - current[-1]['point'][0] <= gap_pt:
+                current.append(pin)
+            else:
+                groups.append(current)
+                current = [pin]
+        groups.append(current)
+        for group in groups:
+            if len(group) == 1:
+                roles[group[0]['id']] = 'single'
+                continue
+            roles[group[0]['id']] = 'first'
+            for pin in group[1:]:
+                roles[pin['id']] = 'extra'
+    return roles
+
+
 def page_package(pilot, number, profile=None):
     """Bu sayfanın işaretli cihazları, birleşimleri ve sayfa devamlarıyla aktarım paketi.
 
@@ -284,6 +358,10 @@ def page_package(pilot, number, profile=None):
     for pin in marks:
         devices.setdefault(pin['device'], []).append(pin)
     node_of_pin, family_of_pin = {}, {}
+    # Tel yönü (uç hangi yöne bakmalı) ve kutu rolü (yakın uçlar tek kutu) EPLAN tarafında
+    # sembol varyantını ve sembolü seçer. Bkz. _wire_directions, _box_roles.
+    directions = _wire_directions(rel)
+    box_roles, device_direction = {}, {}
     for tag, pins in sorted(devices.items()):
         # Bir cihazın her KUTBU ayrı sembol yerleşimidir: 3 kutuplu sigorta = 3 tek kutuplu
         # sembol, klemens sırasının her ucu = ayrı klemens. Aynı cihaz adı hepsinde durur.
@@ -310,11 +388,23 @@ def page_package(pilot, number, profile=None):
                     while any(q['id'] == '%s@%d' % (oid, copy) for q in objects):
                         copy += 1
                     oid = '%s@%d' % (oid, copy)
+                entry = customer.symbol_of(profile, family) or {}
+                if entry.get('group_gap_mm') and tag not in box_roles:
+                    # Kutu birleştirme cihazın BÜTÜN uçlarına bakar: 1 ile 9 ayrı sütunda durur.
+                    box_roles[tag] = _box_roles(pins, float(entry['group_gap_mm']) / PT_TO_MM)
+                if tag not in device_direction:
+                    device_direction[tag] = _majority_direction(directions, pins)
                 rows = []
                 for index, pin in enumerate(group):
+                    own = _direction_at(directions, pin['point'])
                     rows.append(dict(name=pin['pin'], index=index, point_pt=pin['point'],
                                      point_mm=_mm(pin['point'], height), source_id=pin['id'],
-                                     method=pin.get('source_kind')))
+                                     method=pin.get('source_kind'),
+                                     wire_direction=own or device_direction[tag],
+                                     wire_direction_source=('EDGE' if own else
+                                                            'DEVICE_MAJORITY' if device_direction[tag]
+                                                            else None),
+                                     box_role=box_roles.get(tag, {}).get(pin['id'])))
                     # page_model düğüm kimliği 'pin:<id>' önekli, relations ise ham kimlik verir:
                     # ikisi de aynı düğüme çözülsün, yoksa cihazlar hiçbir hatta bağlı görünmez.
                     for key in {pin['id'], pin['id'].split('pin:', 1)[-1]}:

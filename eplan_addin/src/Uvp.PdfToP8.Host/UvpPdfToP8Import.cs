@@ -224,7 +224,16 @@ namespace Uvp.PdfToP8.Host
                         break;
                     }
                 if (chosen == null) { missing.Add(want); continue; }
-                chosen.PlaceAt(pg, target, DocumentTypeManager.DocumentType.Circuit, sv);
+                // Kutu rolü sembolü, tel yönü varyantı seçer (bkz. FacingVariant).
+                string role = S(pinRow, "box_role");
+                string symbolName = role == "first" ? S(familyEntry, "symbol_group_first")
+                                  : role == "extra" ? S(familyEntry, "symbol_group_extra") : "";
+                if (symbolName == "") symbolName = S(familyEntry, "symbol");
+                string direction = S(pinRow, "wire_direction");
+                string facingNote;
+                SymbolVariant useVariant = FacingVariant(prj, S(familyEntry, "library"), symbolName,
+                                                         direction, sv, out facingNote);
+                chosen.PlaceAt(pg, target, DocumentTypeManager.DocumentType.Circuit, useVariant);
                 Pin pin = chosen.Pins[0];
                 PointD absolute = new PointD(chosen.Location.X + pin.Location.X, chosen.Location.Y + pin.Location.Y);
                 chosen.Location = new PointD(chosen.Location.X + target.X - absolute.X,
@@ -234,12 +243,54 @@ namespace Uvp.PdfToP8.Host
                 nodePage[id + "#" + want] = pg;
                 pinLog.Add(new Dictionary<string, object> {
                     { "pin", want }, { "eplan_pin", pin.Name }, { "name", chosen.Name },
-                    { "real_point", XY(real) },
+                    { "real_point", XY(real) }, { "box_role", role }, { "symbol", symbolName },
+                    { "wire_direction", direction }, { "facing", facingNote },
                     { "shift_mm", Math.Round(Math.Abs(real.X - target.X) + Math.Abs(real.Y - target.Y), 2) } });
             }
             row["pins"] = pinLog;
             if (missing.Count > 0) row["unmatched_pins"] = missing.ToArray();
             return true;
+        }
+
+        /// <summary>Bağlantı noktası tel yönüne bakan sembol varyantı. Varyantlar sırayla denenir;
+        /// ilk bağlantı noktasının yönü istenen yönse o seçilir. Bulunamazsa verilen yedek döner ve
+        /// sebebi not edilir — yön uydurulmaz.</summary>
+        static SymbolVariant FacingVariant(Project prj, string library, string symbolName, string direction,
+                                           SymbolVariant fallback, out string note)
+        {
+            note = "";
+            if (string.IsNullOrEmpty(symbolName) || string.IsNullOrEmpty(library))
+            {
+                note = "sembol adı yok; eşleme sembolü kullanıldı";
+                return fallback;
+            }
+            try
+            {
+                Symbol symbol = new Symbol(new SymbolLibrary(prj, library), symbolName);
+                SymbolVariant first = null;
+                for (int nr = 0; nr < symbol.Variants.Length; nr++)
+                {
+                    SymbolVariant candidate = symbol[nr];
+                    if (candidate == null) continue;
+                    if (first == null) first = candidate;
+                    PinBase[] points = candidate.ConnectionPoints;
+                    if (string.IsNullOrEmpty(direction)) break;
+                    if (points != null && points.Length > 0 && points[0].Direction.ToString() == direction)
+                    {
+                        note = "varyant " + nr + " (" + direction + ")";
+                        return candidate;
+                    }
+                }
+                note = string.IsNullOrEmpty(direction)
+                    ? "tel yönü bilinmiyor; varyant 0"
+                    : "'" + direction + "' yönlü varyant yok; varyant 0";
+                return first ?? fallback;
+            }
+            catch (Exception ex)
+            {
+                note = "sembol okunamadı (" + library + "/" + symbolName + "): " + ex.Message;
+                return fallback;
+            }
         }
 
         static void RemoveAll(StorableObject[] placed)
@@ -764,6 +815,9 @@ namespace Uvp.PdfToP8.Host
                     foreach (object lo in A(pkg["expected_links"]))
                     {
                         Dictionary<string, object> link = D(lo);
+                        // Sayfa süzgeci bağlara da uygulanır: 38. sayfa denemesinde özet 370 bağın
+                        // hepsini "bağlanamadı" diye sayıyordu.
+                        if (onlyPages.Count > 0 && !onlyPages.Contains(S(link, "page"))) continue;
                         string a = S(link, "a"), b = S(link, "b");
                         Dictionary<string, object> lr = new Dictionary<string, object>();
                         lr["a"] = a; lr["b"] = b; lr["ok"] = false;
