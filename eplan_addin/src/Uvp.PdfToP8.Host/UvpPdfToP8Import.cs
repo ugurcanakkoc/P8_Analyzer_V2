@@ -100,8 +100,19 @@ namespace Uvp.PdfToP8.Host
             return "";
         }
 
-        /// <summary>Makroda şema (MultiLine) gösterimi var mı?</summary>
+        // Makro dosyasini her cihaz icin acmak pahali: parca basina bir kez sorulur.
+        static readonly Dictionary<string, bool> MultiLineCache = new Dictionary<string, bool>();
+
+        /// <summary>Makroda şema (MultiLine) gösterimi var mı? (parça başına bir kez sorulur)</summary>
         static bool HasMultiLine(string macro, Project project)
+        {
+            if (MultiLineCache.ContainsKey(macro)) return MultiLineCache[macro];
+            bool result = ProbeMultiLine(macro, project);
+            MultiLineCache[macro] = result;
+            return result;
+        }
+
+        static bool ProbeMultiLine(string macro, Project project)
         {
             try
             {
@@ -399,8 +410,20 @@ namespace Uvp.PdfToP8.Host
                     partners[b].Add(declared[a]);
                 }
 
+                // Makro yolu ACIKCA istenmedikce calismaz: son kosuda EPLAN kapandi ve
+                // makbuz hic yazilamadi. Once /MACRO:1 ile kucuk bir sayfa kumesinde denenir.
+                bool useMacros = Io.Param(ctx, "MACRO") == "1";
+                receipt["macro_enabled"] = useMacros;
+                log.Add(useMacros ? "makro yolu ACIK (/MACRO:1)" : "makro yolu kapalı (sembol yolu)");
+
+                // Sayfa suzgeci: /PAGES:4,5 verilirse yalniz o fiziksel sayfalar aktarilir.
+                List<string> onlyPages = new List<string>();
+                foreach (string piece in Io.Param(ctx, "PAGES").Split(','))
+                    if (piece.Trim() != "") onlyPages.Add(piece.Trim());
+                receipt["pages_filter"] = onlyPages.ToArray();
+
                 MDPartsDatabase partsDb = null;
-                try { partsDb = new MDPartsManagement().OpenDatabase(); }
+                try { if (useMacros) partsDb = new MDPartsManagement().OpenDatabase(); }
                 catch (Exception ex) { log.Add("Parça veritabanı açılamadı: " + ex.Message); }
 
                 List<Page> pages = new List<Page>();
@@ -420,6 +443,9 @@ namespace Uvp.PdfToP8.Host
                     foreach (object po in A(pkg["pages"]))
                     {
                         Dictionary<string, object> pd = D(po);
+                        if (onlyPages.Count > 0
+                            && !onlyPages.Contains(Convert.ToString(pd["physical_page"])))
+                            continue;
                         PagePropertyList names = new PagePropertyList();
                         names.DESIGNATION_PLANT = S(pd, "anlage");
                         names.DESIGNATION_LOCATION = S(pd, "einbauort");
@@ -475,6 +501,7 @@ namespace Uvp.PdfToP8.Host
                                         if (number != "" && !tryNumbers.Contains(number)) tryNumbers.Add(number);
                                     }
                                     row["part_tried"] = tryNumbers.ToArray();
+                                    if (!useMacros) tryNumbers.Clear();
                                     foreach (string typeNumber in tryNumbers)
                                     {
                                         MDPart part = FindPart(partsDb, typeNumber, log);
