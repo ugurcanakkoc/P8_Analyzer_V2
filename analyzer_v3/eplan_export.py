@@ -486,6 +486,24 @@ def page_package(pilot, number, profile=None):
         if not net['potential']:
             issues.append('%s: hat adsız; potansiyel yazılmadı.' % net['id'])
 
+    # Şablon yerleşimi: cihazlar UVP çerçevesinin taslak satırlarına oturur (bkz. layout.py).
+    from . import layout
+    template = layout.load(profile)
+    placement = layout.apply(objects, expected, template, profile) if template else None
+    if profile.get('template') and not template:
+        issues.append('Şablon %s bulunamadı (output/sablon): nesneler kaynak koordinatında kaldı. '
+                      'EPLAN\'da UvpSayfaDok.cs, sonra tools/sablon_cikar.py çalıştırılmalı.'
+                      % profile['template'])
+    if placement:
+        if placement['issue']:
+            issues.append('Şablon yerleşimi: %s' % placement['issue'])
+        if placement['devices_without_row']:
+            issues.append('Şablonda satırı olmayan cihaz yerinde kaldı: %s'
+                          % ', '.join(placement['devices_without_row']))
+        if placement['nodes_unresolved']:
+            issues.append('Bağlı ucu çözülemeyen nokta yerinde kaldı: %s'
+                          % ', '.join(placement['nodes_unresolved']))
+
     page = model['page']
     body = dict(contract='uvp.pdf2p8.import-request', contract_version='1.0',
                 document_sha256=pilot.manifest.get('source_sha256'),
@@ -496,7 +514,8 @@ def page_package(pilot, number, profile=None):
                                    production_released=False),
                 pages=[dict(physical_page=number, blatt=page['blatt'], anlage=page['anlage'],
                             einbauort=page['einbauort'],
-                            source_size_pt=[page['width'], page['height']], objects=objects)],
+                            source_size_pt=[page['width'], page['height']], objects=objects,
+                            layout=placement)],
                 expected_links=expected, issues=issues,
                 limitation='Yalnız İŞARETLİ cihazlar pakete girer. Bağlar çizilmiş graf '
                            'yolunu korur; fiziksel tel/köprü kararı DEĞİLDİR. '

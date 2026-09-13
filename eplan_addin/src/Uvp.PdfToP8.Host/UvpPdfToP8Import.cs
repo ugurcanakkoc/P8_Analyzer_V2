@@ -224,6 +224,8 @@ namespace Uvp.PdfToP8.Host
                 }
                 deviceIo = inputs > outputs ? "input" : outputs > inputs ? "output" : "";
             }
+            // Tanımdan okunamazsa paketin türü (profil plc_io_by_part, parça kodundan).
+            if (deviceIo == "") deviceIo = S(o, "io");
             row["device_io"] = deviceIo;
             List<object> pinLog = new List<object>();
             List<string> missing = new List<string>();
@@ -251,6 +253,10 @@ namespace Uvp.PdfToP8.Host
                 string direction = S(pinRow, "wire_direction");
                 string directionSource = direction == "" ? "" : "kaynak tel";
                 string io = IoKind(chosen);
+                // Paket yerleşimi uç yüksekliğini parça kodundan gelen türle hesapladı; EPLAN tanımı
+                // başka tür diyorsa uç satırın yanlış kenarında kalır — alındıda görünsün.
+                if (io != "" && S(o, "io") != "" && io != S(o, "io"))
+                    row["io_mismatch"] = "EPLAN tanımı " + io + ", paket " + S(o, "io");
                 string ruleKey = io != "" ? io : deviceIo;
                 if (ruleKey != "" && familyEntry.ContainsKey("facing_by_io"))
                 {

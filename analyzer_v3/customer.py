@@ -69,16 +69,22 @@ def load(name=None):
     return dict(customer=data.get('customer', name), source=str(file),
                 rules=list(rules) if rules else list(BUILTIN_RULES),
                 families=data.get('families') or {},
-                note=data.get('note', ''))
+                note=data.get('note', ''),
+                # İsteğe bağlı: şablon yerleşimi (layout.py) ve ürün kodu seçimi okur.
+                template=data.get('template'),
+                plc_io_by_part=data.get('plc_io_by_part') or {},
+                part_pick=data.get('part_pick') or {})
 
 
 def save(name, rules, families, note=''):
     name = valid_name(name)
     file = path_of(name)
     file.parent.mkdir(parents=True, exist_ok=True)
-    file.write_text(json.dumps(dict(contract='uvp.pdf2p8.customer-profile', contract_version='1.0',
-                                    customer=name, rules=rules, families=families, note=note),
-                               ensure_ascii=False, indent=1), encoding='utf-8')
+    # Dosyadaki öteki alanlar (şablon, PLC türü, ürün kodu seçimi) korunur; yalnız verilenler yazılır.
+    data = json.loads(file.read_text(encoding='utf-8')) if file.exists() else {}
+    data.update(contract='uvp.pdf2p8.customer-profile', contract_version='1.0',
+                customer=name, rules=rules, families=families, note=note)
+    file.write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding='utf-8')
     return file
 
 
