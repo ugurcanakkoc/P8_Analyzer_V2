@@ -19,6 +19,7 @@ __pycache__/
 node_modules/
 .playwright-mcp/
 .serena/
+.claude/settings.local.json
 *.sqlite3
 *.log
 

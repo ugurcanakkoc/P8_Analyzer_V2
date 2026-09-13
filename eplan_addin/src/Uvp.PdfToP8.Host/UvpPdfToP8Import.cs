@@ -210,6 +210,21 @@ namespace Uvp.PdfToP8.Host
 
             row["source"] = "DEVICE_FROM_PART";
             row["part_number"] = partNumber;
+            // Cihazın türü kanallarının çoğunluğundan: besleme uçları (L+/M) kendi türü olmadığı
+            // için kanallarla aynı yöne baksın.
+            string deviceIo = "";
+            if (familyEntry.ContainsKey("facing_by_io"))
+            {
+                int inputs = 0, outputs = 0;
+                foreach (Function fn in functions)
+                {
+                    string kind = IoKind(fn);
+                    if (kind == "input") inputs++;
+                    else if (kind == "output") outputs++;
+                }
+                deviceIo = inputs > outputs ? "input" : outputs > inputs ? "output" : "";
+            }
+            row["device_io"] = deviceIo;
             List<object> pinLog = new List<object>();
             List<string> missing = new List<string>();
             foreach (object pr in A(o["pins"]))
@@ -230,7 +245,25 @@ namespace Uvp.PdfToP8.Host
                 string symbolName = role == "first" ? S(familyEntry, "symbol_group_first")
                                   : role == "extra" ? S(familyEntry, "symbol_group_extra") : "";
                 if (symbolName == "") symbolName = S(familyEntry, "symbol");
+                // Yön önce ŞABLON KURALINDAN (giriş/çıkış), yoksa kaynaktaki telden.
+                // Ölçüm (hedef proje, tools/plc_yon_tara.py): DI uçları yukarı, DQ uçları aşağı;
+                // müşteri çiziminde DI telleri aşağı iniyordu, telden okumak girişleri ters koyuyordu.
                 string direction = S(pinRow, "wire_direction");
+                string directionSource = direction == "" ? "" : "kaynak tel";
+                string io = IoKind(chosen);
+                string ruleKey = io != "" ? io : deviceIo;
+                if (ruleKey != "" && familyEntry.ContainsKey("facing_by_io"))
+                {
+                    string ruled = S(D(familyEntry["facing_by_io"]), ruleKey);
+                    if (ruled != "")
+                    {
+                        direction = ruled;
+                        directionSource = "şablon kuralı (" + ruleKey + (io == "" ? ", cihazdan" : "") + ")";
+                    }
+                }
+                string definition = "";
+                try { definition = chosen.FunctionDefinition.Group + "/" + chosen.FunctionDefinition.Id; }
+                catch (Exception) { }
                 string facingNote;
                 SymbolVariant useVariant = FacingVariant(prj, S(familyEntry, "library"), symbolName,
                                                          direction, sv, out facingNote);
@@ -252,12 +285,29 @@ namespace Uvp.PdfToP8.Host
                 pinLog.Add(new Dictionary<string, object> {
                     { "pin", want }, { "eplan_pin", pin.Name }, { "name", chosen.Name },
                     { "real_point", XY(real) }, { "box_role", role }, { "symbol", symbolName },
-                    { "wire_direction", direction }, { "facing", facingNote },
+                    { "wire_direction", S(pinRow, "wire_direction") }, { "io", io },
+                    { "function_definition", definition },
+                    { "direction", direction }, { "direction_source", directionSource },
+                    { "facing", facingNote },
                     { "shift_mm", Math.Round(Math.Abs(real.X - target.X) + Math.Abs(real.Y - target.Y), 2) } });
             }
             row["pins"] = pinLog;
             if (missing.Count > 0) row["unmatched_pins"] = missing.ToArray();
             return true;
+        }
+
+        /// <summary>PLC ucu giriş mi çıkış mı: fonksiyon tanımının adından (tüm dillerde).
+        /// İkisi de ya da hiçbiri geçiyorsa (ör. DIO) boş döner; yön o zaman telden gelir.</summary>
+        static string IoKind(Function fn)
+        {
+            string name;
+            try { name = fn.FunctionDefinition.Name.GetAsString().ToLowerInvariant(); }
+            catch (Exception) { return ""; }
+            // ponytail: dil sözcüğüyle ayırt ediliyor; alındıda function_definition (grup/kimlik)
+            // birikince dilden bağımsız kimlik eşlemesine geçilir.
+            bool input = name.Contains("input") || name.Contains("eingang") || name.Contains("giriş");
+            bool output = name.Contains("output") || name.Contains("ausgang") || name.Contains("çıkış");
+            return input == output ? "" : input ? "input" : "output";
         }
 
         /// <summary>Bağlantı noktası tel yönüne bakan sembol varyantı. Varyantlar sırayla denenir;
