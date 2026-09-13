@@ -96,8 +96,32 @@ public class UvpSayfaAktar
                             Baslik, MessageBoxButtons.OK, MessageBoxIcon.Error);
             return;
         }
+        // Önce KÜÇÜK dene: 36 sayfa bir anda EPLAN'ı çökertti. Sayfa numarası PDF'in fiziksel
+        // sayfasıdır (örn. PLC için 38). Boş bırakılırsa bütün sayfalar aktarılır.
+        string sayfalar = "";
+        using (Form form = new Form())
+        using (Label yazi = new Label())
+        using (TextBox kutu = new TextBox())
+        using (Button tamam = new Button())
+        {
+            form.Text = Baslik;
+            form.Width = 460; form.Height = 170;
+            form.FormBorderStyle = FormBorderStyle.FixedDialog;
+            form.StartPosition = FormStartPosition.CenterScreen;
+            yazi.Text = "Hangi sayfalar? (PDF sayfa no, virgülle — örn. 38 veya 4,5). Boş = hepsi";
+            yazi.Left = 12; yazi.Top = 12; yazi.Width = 420;
+            kutu.Left = 12; kutu.Top = 40; kutu.Width = 420; kutu.Text = "38";
+            tamam.Text = "Aktar"; tamam.Left = 342; tamam.Top = 80; tamam.Width = 90;
+            tamam.DialogResult = DialogResult.OK;
+            form.Controls.Add(yazi); form.Controls.Add(kutu); form.Controls.Add(tamam);
+            form.AcceptButton = tamam;
+            if (form.ShowDialog() != DialogResult.OK) return;
+            sayfalar = kutu.Text.Replace(" ", "");
+        }
+
         bool ok = cli.Execute("UvpPdfToP8Import /PACKAGE:\"" + paket + "\" /MAPPING:\"" + esleme +
                               "\" /OUT:\"" + cikti + "\" /TEMPLATE:\"" + Sablon + "\"" +
+                              (sayfalar != "" ? " /PAGES:\"" + sayfalar + "\"" : "") +
                               (acikProje ? " /TARGET:OPEN" : ""));
 
         string ozet = File.Exists(ozetDosya) ? File.ReadAllText(ozetDosya) : "(özet dosyası yazılmadı)";

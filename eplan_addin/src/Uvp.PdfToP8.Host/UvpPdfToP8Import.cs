@@ -171,6 +171,77 @@ namespace Uvp.PdfToP8.Host
             return out_;
         }
 
+        /// <summary>Cihazı PARÇADAN kur ve yalnız kaynak uçlarına karşılık gelen fonksiyonları
+        /// yerleştir. Ailede "placement": "DEVICE_FROM_PART" yoksa ya da ürün kodu yoksa false döner
+        /// ve eski yol (makro/sembol) sürer.</summary>
+        static bool TryPlaceFromPart(Dictionary<string, object> o, Dictionary<string, object> familyEntry,
+                                     Project prj, Page pg, SymbolVariant sv, MDPartsDatabase partsDb,
+                                     Dictionary<string, Function[]> devices,
+                                     Dictionary<string, PointD> nodePoint, Dictionary<string, Page> nodePage,
+                                     Dictionary<string, object> row, List<string> log)
+        {
+            if (S(familyEntry, "placement") != "DEVICE_FROM_PART") return false;
+            string partNumber = S(o, "part_number");
+            string tag = S(o, "device_tag");
+            string id = S(o, "id");
+            if (partNumber == "" || tag == "") return false;
+
+            Function[] functions;
+            if (!devices.TryGetValue(tag, out functions))
+            {
+                MDPart part = FindPart(partsDb, partNumber, log);
+                if (part == null) { row["part_lookup"] = "bulunamadı: " + partNumber; return false; }
+                functions = new DeviceService().CreateDevice(prj, part.PartNr, part.Variant ?? "",
+                                                             new FunctionPropertyList());
+                if (functions == null || functions.Length == 0)
+                    throw new InvalidOperationException("Parçadan cihaz oluşmadı: " + partNumber);
+                // Ölçüm: yalnız ana fonksiyonu adlandırmak yetmiyor; bağlantı noktaları eski adda
+                // ('-K1') kalıyor. Her fonksiyon ayrı adlandırılır.
+                foreach (Function fn in functions)
+                {
+                    string only = fn.Pins.Length == 1 ? fn.Pins[0].Name : "";
+                    try { fn.Name = (fn.IsMainFunction || only == "") ? tag : tag + ":" + only; }
+                    catch (Exception ex) { log.Add("ad yazılamadı (" + tag + "): " + ex.Message); }
+                }
+                devices[tag] = functions;
+                log.Add("parçadan cihaz " + tag + " <- " + partNumber + " (" + functions.Length + " fonksiyon)");
+            }
+
+            row["source"] = "DEVICE_FROM_PART";
+            row["part_number"] = partNumber;
+            List<object> pinLog = new List<object>();
+            List<string> missing = new List<string>();
+            foreach (object pr in A(o["pins"]))
+            {
+                Dictionary<string, object> pinRow = D(pr);
+                string want = S(pinRow, "name");
+                PointD target = P(pinRow["point_mm"]);
+                Function chosen = null;
+                foreach (Function fn in functions)
+                    if (!fn.IsPlaced && fn.Pins.Length == 1 && PinNamesMatch(want, fn.Pins[0].Name))
+                    {
+                        chosen = fn;
+                        break;
+                    }
+                if (chosen == null) { missing.Add(want); continue; }
+                chosen.PlaceAt(pg, target, DocumentTypeManager.DocumentType.Circuit, sv);
+                Pin pin = chosen.Pins[0];
+                PointD absolute = new PointD(chosen.Location.X + pin.Location.X, chosen.Location.Y + pin.Location.Y);
+                chosen.Location = new PointD(chosen.Location.X + target.X - absolute.X,
+                                             chosen.Location.Y + target.Y - absolute.Y);
+                PointD real = new PointD(chosen.Location.X + pin.Location.X, chosen.Location.Y + pin.Location.Y);
+                nodePoint[id + "#" + want] = real;
+                nodePage[id + "#" + want] = pg;
+                pinLog.Add(new Dictionary<string, object> {
+                    { "pin", want }, { "eplan_pin", pin.Name }, { "name", chosen.Name },
+                    { "real_point", XY(real) },
+                    { "shift_mm", Math.Round(Math.Abs(real.X - target.X) + Math.Abs(real.Y - target.Y), 2) } });
+            }
+            row["pins"] = pinLog;
+            if (missing.Count > 0) row["unmatched_pins"] = missing.ToArray();
+            return true;
+        }
+
         static void RemoveAll(StorableObject[] placed)
         {
             if (placed == null) return;
@@ -422,8 +493,11 @@ namespace Uvp.PdfToP8.Host
                     if (piece.Trim() != "") onlyPages.Add(piece.Trim());
                 receipt["pages_filter"] = onlyPages.ToArray();
 
+                // Parça veritabanı her zaman açılır: parçadan cihaz yolu (PLC) makro yolundan
+                // bağımsızdır. Çökme makro dosyasını 326 kez açıp kapatmaktan geliyordu.
+                Dictionary<string, Function[]> devicesFromPart = new Dictionary<string, Function[]>();
                 MDPartsDatabase partsDb = null;
-                try { if (useMacros) partsDb = new MDPartsManagement().OpenDatabase(); }
+                try { partsDb = new MDPartsManagement().OpenDatabase(); }
                 catch (Exception ex) { log.Add("Parça veritabanı açılamadı: " + ex.Message); }
 
                 List<Page> pages = new List<Page>();
@@ -477,6 +551,15 @@ namespace Uvp.PdfToP8.Host
                                 SymbolVariant sv = Variant(prj, D(families[family]), log);
                                 if (kind == "DEVICE")
                                 {
+                                    // PARÇADAN CİHAZ: Cihaz Gezgini ile aynı yol. Olursa makro/sembol
+                                    // yolu hiç denenmez.
+                                    if (TryPlaceFromPart(o, D(families[family]), prj, pg, sv, partsDb,
+                                                         devicesFromPart, nodePoint, nodePage, row, log))
+                                    {
+                                        row["eplan_type"] = "parçadan cihaz";
+                                        created.Add(row);
+                                        continue;
+                                    }
                                     ArrayList pinRowsAll = A(o["pins"]);
                                     string firstPinName = S(D(pinRowsAll[0]), "name");
                                     PointD firstPoint = P(D(pinRowsAll[0])["point_mm"]);
